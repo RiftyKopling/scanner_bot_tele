@@ -62,6 +62,27 @@ async def webhook(request: Request):
     message = update["message"]
     chat_id = message["chat"]["id"]
 
+    # Handle commands
+    if "text" in message:
+        text = message.get("text", "")
+        if text.startswith("/start"):
+            send_message(
+                chat_id,
+                "Halo! Gunakan menu:\n/compress - Kompres foto\n/help - Bantuan"
+            )
+            return {"status": "ok"}
+        elif text.startswith("/help"):
+            send_message(
+                chat_id,
+                "Cara pakai:\n1. Klik /compress\n2. Kirim foto (maks 4 MB)\n3. Bot akan mengirimkan gambar terkompresi."
+            )
+            return {"status": "ok"}
+        elif text.startswith("/compress"):
+            send_message(
+                chat_id,
+                "Silakan kirimkan foto yang ingin Anda kompres."
+            )
+            return {"status": "ok"}
     # Jika bukan foto
     if "photo" not in message:
 

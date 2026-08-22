@@ -1,0 +1,1 @@
+Proyek ini adalah bot Telegram berbasis FastAPI yang berfungsi untuk mengompres gambar. Bot menerima webhook Telegram, memproses foto (konversi ke RGB, kompresi JPEG dengan kualitas 40), memeriksa batas ukuran 4 MB, dan mengirimkan kembali gambar terkompresi. Selain itu bot menyediakan menu perintah /start, /compress, dan /help untuk interaksi pengguna.
