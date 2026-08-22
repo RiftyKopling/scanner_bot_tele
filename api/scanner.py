@@ -22,33 +22,40 @@ def scan_image(image_bytes: bytes) -> bytes:
     if w > 1600:
         scale = 1600 / w
         img = cv2.resize(img, (int(w*scale), int(h*scale)))
-
-    # 2. Konversi ke grayscale
+        
+    # ubah jadi grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Normalisasi pencahayaan dulu
-    bg = cv2.GaussianBlur(gray, (55, 55), 0)
-    normalized = cv2.divide(gray, bg, scale=255)
-    
-    # 3. Reduksi noise dengan Gaussian blur
-    blurred = cv2.GaussianBlur(normalized, (5, 5), 0)
 
-    # 4. Adaptive threshold -> hasil hitam-putih bersih
+    # 1. Illumination correction
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (55, 55))
+    background = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
+    diff = cv2.subtract(background, gray)
+    normalized = 255 - diff
+    
+    # 2. Noise reduction tapi pertahankan tepi
+    smoothed = cv2.bilateralFilter(normalized, 9, 75, 75)
+    
+    # 3.  Adaptive threshold -> hasil hitam-putih bersih
     scanned = cv2.adaptiveThreshold(
-        blurred,
+        smoothed,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
-        11,
-        5,
+        51,
+        7,
     )
     
-    # Cleanup noise kecil
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-    scanned = cv2.morphologyEx(scanned, cv2.MORPH_OPEN, kernel)
+    # test otsu thresholding
+    # ret, scanned = cv2.threshold(
+    #     smoothed, 0, 255,
+    #     cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    # )
+    
+    # 4. Cleanup akhir
+    final = cv2.medianBlur(scanned, 3)
 
     # 5. Encode menjadi PNG bytes
-    ok, enc = cv2.imencode(".png", scanned)
+    ok, enc = cv2.imencode(".png", final)
     if not ok:
         raise RuntimeError("Gagal meng-encode gambar hasil scan")
 
