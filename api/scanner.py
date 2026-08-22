@@ -16,6 +16,12 @@ def scan_image(image_bytes: bytes) -> bytes:
 
     if img is None:
         raise ValueError("Gambar tidak valid atau gagal di-decode")
+    
+    # jika resolusi gambar terlalu besar turunkan 
+    h, w = img.shape[:2]
+    if w > 1600:
+        scale = 1600 / w
+        img = cv2.resize(img, (int(w*scale), int(h*scale)))
 
     # 2. Konversi ke grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -29,12 +35,12 @@ def scan_image(image_bytes: bytes) -> bytes:
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
-        11,
-        2,
+        15,
+        10,
     )
 
-    # 5. Encode kembali ke JPEG bytes
-    ok, enc = cv2.imencode(".jpg", scanned)
+    # 5. Encode menjadi PNG bytes
+    ok, enc = cv2.imencode(".png", scanned)
     if not ok:
         raise RuntimeError("Gagal meng-encode gambar hasil scan")
 
