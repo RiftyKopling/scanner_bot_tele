@@ -25,9 +25,13 @@ def scan_image(image_bytes: bytes) -> bytes:
 
     # 2. Konversi ke grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
+    
+    # Normalisasi pencahayaan dulu
+    bg = cv2.GaussianBlur(gray, (55, 55), 0)
+    normalized = cv2.divide(gray, bg, scale=255)
+    
     # 3. Reduksi noise dengan Gaussian blur
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    blurred = cv2.GaussianBlur(normalized, (5, 5), 0)
 
     # 4. Adaptive threshold -> hasil hitam-putih bersih
     scanned = cv2.adaptiveThreshold(
@@ -35,9 +39,13 @@ def scan_image(image_bytes: bytes) -> bytes:
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
-        15,
+        21,
         10,
     )
+    
+    # Cleanup noise kecil
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+    scanned = cv2.morphologyEx(scanned, cv2.MORPH_OPEN, kernel)
 
     # 5. Encode menjadi PNG bytes
     ok, enc = cv2.imencode(".png", scanned)
