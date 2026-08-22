@@ -27,7 +27,7 @@ def scan_image(image_bytes: bytes) -> bytes:
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
     # 1. Illumination correction
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (55, 55))
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
     background = cv2.morphologyEx(gray, cv2.MORPH_CLOSE, kernel)
     diff = cv2.subtract(background, gray)
     normalized = 255 - diff
@@ -41,8 +41,8 @@ def scan_image(image_bytes: bytes) -> bytes:
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
-        51,
-        7,
+        23,
+        3,
     )
     
     # test otsu thresholding
