@@ -6,6 +6,11 @@ from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import StreamingResponse
 from PIL import Image
 
+try:
+    from api.scanner import scan_image
+except ImportError:
+    from scanner import scan_image
+
 
 app = FastAPI()
 
@@ -16,6 +21,9 @@ TELEGRAM_FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
 
 # Batas ukuran file: 4 MB
 MAX_FILE_SIZE = 4 * 1024 * 1024
+
+# Menyimpan mode tiap pengguna: "compress" atau "scan"
+user_mode = {}
 
 
 @app.get("/api")
@@ -68,19 +76,36 @@ async def webhook(request: Request):
         if text.startswith("/start"):
             send_message(
                 chat_id,
-                "Halo! Gunakan menu:\n/compress - Kompres foto\n/help - Bantuan"
+                "Halo! Selamat datang di Bot Kompres Gambar.\n\n"
+                "Gunakan menu berikut:\n"
+                "/compress - Kompres foto\n"
+                "/scanner - Scan foto jadi hitam-putih\n"
+                "/help - Bantuan"
             )
             return {"status": "ok"}
         elif text.startswith("/help"):
             send_message(
                 chat_id,
-                "Cara pakai:\n1. Klik /compress\n2. Kirim foto (maks 4 MB)\n3. Bot akan mengirimkan gambar terkompresi."
+                "Bot ini dapat mengompres dan memindai gambar Anda.\n\n"
+                "Cara pakai:\n"
+                "1. Klik /compress atau /scanner\n"
+                "2. Kirim foto (maks 4 MB)\n"
+                "3. Bot akan mengirimkan hasilnya."
             )
             return {"status": "ok"}
         elif text.startswith("/compress"):
+            user_mode[chat_id] = "compress"
             send_message(
                 chat_id,
                 "Silakan kirimkan foto yang ingin Anda kompres."
+            )
+            return {"status": "ok"}
+        elif text.startswith("/scanner"):
+            user_mode[chat_id] = "scan"
+            send_message(
+                chat_id,
+                "Silakan kirimkan foto yang ingin dipindai.\n\n"
+                "Bot akan mengubahnya menjadi dokumen hitam-putih yang bersih."
             )
             return {"status": "ok"}
     # Jika bukan foto
@@ -169,6 +194,56 @@ async def webhook(request: Request):
     original_data = image_response.content
 
     original_size = len(original_data)
+
+    # ==========================
+    # 3b. Mode scanner: proses dengan OpenCV
+    # ==========================
+
+    if user_mode.get(chat_id) == "scan":
+
+        try:
+
+            scanned_data = scan_image(original_data)
+
+        except Exception:
+
+            send_message(
+                chat_id,
+                "❌ Gagal memproses foto untuk discan."
+            )
+
+            return {"status": "error"}
+
+        response = requests.post(
+            f"{TELEGRAM_API}/sendPhoto",
+            files={
+                "photo": (
+                    "scanned.jpg",
+                    scanned_data,
+                    "image/jpeg"
+                )
+            },
+            data={
+                "chat_id": chat_id,
+                "caption": "✅ Foto berhasil di-scan!"
+            },
+            timeout=30
+        )
+
+        if not response.ok:
+
+            send_message(
+                chat_id,
+                "❌ Foto berhasil di-scan, "
+                "tetapi gagal mengirim hasilnya."
+            )
+
+            return {"status": "error"}
+
+        return {
+            "status": "success",
+            "mode": "scan"
+        }
 
     # ==========================
     # 4. Buka gambar
