@@ -39,8 +39,8 @@ def scan_image(image_bytes: bytes) -> bytes:
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY,
-        21,
-        10,
+        11,
+        5,
     )
     
     # Cleanup noise kecil
