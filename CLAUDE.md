@@ -23,6 +23,7 @@ TUNING_SCANNER.txt # panduan tuning scanner
 - Command text: `text.startswith("/cmd")` → set `user_mode[chat_id]` (`"compress"` / `"scan"`) → minta user kirim file.
 - Foto: `message["photo"][-1]` (index terakhir = resolusi terbesar).
 - PDF nanti datang sebagai `message.document` + `mime_type == "application/pdf"` (**bukan** `photo`) — handler untuk ini belum ada.
+- Webhook divalidasi header `X-Telegram-Bot-Api-Secret-Token` (env `TELEGRAM_WEBHOOK_SECRET`, opsional — dilewati jika kosong); seluruh body webhook dibungkus try/except induk.
 - Balasan via helper `send_message(chat_id, text)` dan POST langsung ke `{TELEGRAM_API}/sendPhoto|sendDocument`.
 
 ## Aturan Keras
@@ -34,6 +35,7 @@ TUNING_SCANNER.txt # panduan tuning scanner
    - `scan_image(data)` ✅ sudah ada
 4. Exception di handler ditangkap → kirim pesan ❌ ke user → return JSON status. Jangan biarkan error naik ke webhook (Telegram retry ulang).
 5. Jangan ubah parameter pipeline scanner tanpa tuning dulu via `python -m tests.test_scanner --show`.
+6. Timeout semua call HTTP ke Telegram = `HTTP_TIMEOUT` (8 s) — jangan dinaikkan melebihi limit fungsi 10 s.
 
 ## Menjalankan Lokal (Windows PowerShell)
 ```powershell
@@ -48,7 +50,7 @@ Webhook lokal: pakai ngrok → set webhook ke `<ngrok-url>/api/webhook`.
 
 ## Limitasi Hosting (Vercel Hobby)
 - Timeout fungsi **10 s**, bundle ≤ 250 MB, cold start cv2+numpy ~2–5 s (wajar).
-- Tanpa disk persisten; env var `TELEGRAM_BOT_TOKEN` wajib diset di dashboard.
+- Tanpa disk persisten; env var `TELEGRAM_BOT_TOKEN` wajib diset di dashboard (`TELEGRAM_WEBHOOK_SECRET` opsional untuk validasi webhook).
 - Telegram API sendiri: download 20 MB / upload 50 MB — bukan bottleneck; bottleneck kita adalah timeout 10 s.
 - Belum ada `vercel.json` [TODO] — routing default runtime Python Vercel sudah cocok dengan layout `api/index.py`.
 
@@ -64,3 +66,4 @@ Webhook lokal: pakai ngrok → set webhook ke `<ngrok-url>/api/webhook`.
 - PyMuPDF dipilih karena satu wheel pip, tanpa binary eksternal (Ghostscript tidak realistis di serverless).
 - Hasil gambar dikirim via `sendPhoto`; PDF via `sendDocument`.
 - Pesan bot berbahasa Indonesia.
+- `user_mode` in-memory sengaja dipertahankan walau flaky di multi-instance serverless (keputusan v1).

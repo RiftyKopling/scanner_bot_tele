@@ -14,10 +14,9 @@ Diurutkan dari yang paling dekat siap pakai.
 
 ## 2. Kompres Gambar
 - [x] Logic kompres jalan di `api/index.py`
-- [ ] Refactor ke `api/compress.py`: `compress_image(data: bytes, quality: int = 40) -> bytes`
-      (signature parameterized sejak awal supaya level dinamis v2 tanpa refactor)
-- [ ] Handle orientasi EXIF (`PIL.ImageOps.exif_transpose`) sebelum kompres
 - [ ] Unit test: input PNG/RGBA/WebP → output JPEG valid, ukuran berkurang
+
+Refactor & fix terkait kode kompres masuk **section 6** di bawah.
 
 ## 3. Kompres PDF (fitur baru)
 - [ ] Install `PyMuPDF` ke `requirements.txt`
@@ -39,9 +38,38 @@ Diurutkan dari yang paling dekat siap pakai.
 ## 5. Deploy Vercel
 - [ ] Buat `vercel.json` (routing semua path → `api/index.py`)
 - [ ] Set env var `TELEGRAM_BOT_TOKEN` di dashboard Vercel
-- [ ] Set webhook sekali setelah deploy:
-      `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<URL>/api/webhook`
+      (+ opsional `TELEGRAM_WEBHOOK_SECRET` untuk validasi webhook)
+- [ ] Set webhook sekali setelah deploy (sertakan secret jika dipakai):
+      `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<URL>/api/webhook&secret_token=<TELEGRAM_WEBHOOK_SECRET>`
 - [ ] Tes end-to-end dari Telegram: compress, scanner, pdf
+
+## 6. Perbaikan api/index.py (hasil review)
+
+### 🔴 Keandalan Deploy
+- [x] Bungkus body webhook dengan try/except induk — cegah HTTP 500
+      yang memicu retry Telegram; kirim pesan ❌ + return JSON status
+- [x] Validasi webhook secret: set `secret_token` saat `setWebhook`,
+      cek header `X-Telegram-Bot-Api-Secret-Token` di awal handler
+- [x] Turunkan timeout `requests` 30 s → ~8 s (limit fungsi Vercel 10 s)
+
+### 🟡 Refactor Menengah
+- [ ] Pindah logic kompres ke `api/compress.py`:
+      `compress_image(data: bytes, quality: int = 40) -> bytes`
+      (hapus duplikasi `/api/compress` vs webhook)
+- [ ] `ImageOps.exif_transpose` sebelum kompres (foto HP tampil miring)
+- [ ] Cek `photo["file_size"]` langsung dari update → tolak >4 MB tanpa
+      panggilan `getFile` (hemat 1 API call)
+- [ ] Pecah webhook ~290 baris → `handle_command()` / `handle_photo()` dll
+- [ ] Tambah logging dasar agar bisa debug dari Vercel logs
+
+### 🟢 Polish Kecil
+- [ ] Command matching persis (split spasi), bukan `startswith`
+- [ ] RGBA→RGB dengan background putih, bukan `convert()` langsung
+- [ ] Pesan fallback non-foto menyesuaikan mode aktif (scan vs compress)
+
+Keputusan (bukan task):
+- TELEGRAM_BOT_TOKEN ✅ sudah diset di Vercel
+- user_mode in-memory diterima flaky di serverless (v1 personal)
 
 ## Backlog (v2+)
 - [ ] Level kompresi dinamis: `/compress low|med|high` → q=60/40/20

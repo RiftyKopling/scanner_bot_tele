@@ -1,4 +1,5 @@
 import os
+import logging
 import requests
 from io import BytesIO
 
@@ -22,8 +23,27 @@ TELEGRAM_FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
 # Batas ukuran file: 4 MB
 MAX_FILE_SIZE = 4 * 1024 * 1024
 
+# Timeout tiap call ke Telegram API.
+# Fungsi serverless (Vercel Hobby) dibunuh di 10 detik,
+# jadi tiap request harus selesai jauh sebelum itu.
+HTTP_TIMEOUT = 8
+
+# Secret untuk validasi webhook (opsional).
+# Set env var ini di Vercel DAN kirim sebagai `secret_token`
+# saat memanggil setWebhook. Jika tidak diset, validasi dilewati.
+WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
+
 # Menyimpan mode tiap pengguna: "compress" atau "scan"
 user_mode = {}
+
+logger = logging.getLogger(__name__)
+
+
+def _validate_webhook_secret(request: Request) -> bool:
+    """Cek header X-Telegram-Bot-Api-Secret-Token jika secret dikonfigurasi."""
+    if not WEBHOOK_SECRET:
+        return True
+    return request.headers.get("X-Telegram-Bot-Api-Secret-Token") == WEBHOOK_SECRET
 
 
 @app.get("/api")
@@ -62,179 +82,301 @@ async def compress(file: UploadFile = File(...)):
 @app.post("/api/webhook")
 async def webhook(request: Request):
 
-    update = await request.json()
-
-    if "message" not in update:
-        return {"status": "ignored"}
-
-    message = update["message"]
-    chat_id = message["chat"]["id"]
-
-    # Handle commands
-    if "text" in message:
-        text = message.get("text", "")
-        if text.startswith("/start"):
-            send_message(
-                chat_id,
-                "Halo! Selamat datang di Bot Kompres Gambar.\n\n"
-                "Gunakan menu berikut:\n"
-                "/compress - Kompres foto\n"
-                "/scanner - Scan foto jadi hitam-putih\n"
-                "/help - Bantuan"
-            )
-            return {"status": "ok"}
-        elif text.startswith("/help"):
-            send_message(
-                chat_id,
-                "Bot ini dapat mengompres dan memindai gambar Anda.\n\n"
-                "Cara pakai:\n"
-                "1. Klik /compress atau /scanner\n"
-                "2. Kirim foto (maks 4 MB)\n"
-                "3. Bot akan mengirimkan hasilnya."
-            )
-            return {"status": "ok"}
-        elif text.startswith("/compress"):
-            user_mode[chat_id] = "compress"
-            send_message(
-                chat_id,
-                "Silakan kirimkan foto yang ingin Anda kompres."
-            )
-            return {"status": "ok"}
-        elif text.startswith("/scanner"):
-            user_mode[chat_id] = "scan"
-            send_message(
-                chat_id,
-                "Silakan kirimkan foto yang ingin dipindai.\n\n"
-                "Bot akan mengubahnya menjadi dokumen hitam-putih yang bersih."
-            )
-            return {"status": "ok"}
-    # Jika bukan foto
-    if "photo" not in message:
-
-        send_message(
-            chat_id,
-            "📷 Silakan kirim gambar untuk dikompres."
-        )
-
-        return {"status": "ok"}
-
-    # Ambil foto dengan resolusi terbesar
-    photo = message["photo"][-1]
-
-    file_id = photo["file_id"]
-
     # ==========================
-    # 1. Ambil informasi file
+    # 0. Validasi secret webhook
     # ==========================
 
-    file_info_response = requests.get(
-        f"{TELEGRAM_API}/getFile",
-        params={
-            "file_id": file_id
-        },
-        timeout=30
-    )
-
-    file_info = file_info_response.json()
-
-    if not file_info.get("ok"):
-        send_message(
-            chat_id,
-            "❌ Gagal mendapatkan informasi foto."
-        )
-
-        return {"status": "error"}
-
-    file_data = file_info["result"]
-
-    file_path = file_data["file_path"]
-
-    # Telegram memberikan ukuran file
-    file_size = file_data.get("file_size", 0)
-
-    # ==========================
-    # 2. Cek ukuran file
-    # ==========================
-
-    if file_size > MAX_FILE_SIZE:
-
-        size_mb = file_size / (1024 * 1024)
-
-        send_message(
-            chat_id,
-            f"❌ Foto terlalu besar.\n\n"
-            f"📦 Ukuran foto: {size_mb:.2f} MB\n"
-            f"📏 Batas maksimal: 4 MB\n\n"
-            f"Silakan kirim foto dengan ukuran maksimal 4 MB."
-        )
-
+    if not _validate_webhook_secret(request):
+        logger.warning("Webhook ditolak: secret token tidak valid")
         return {
             "status": "rejected",
-            "reason": "file_too_large"
+            "reason": "invalid_secret"
         }
 
-    # ==========================
-    # 3. Download foto
-    # ==========================
+    chat_id = None
 
-    image_response = requests.get(
-        f"{TELEGRAM_FILE_API}/{file_path}",
-        timeout=30
-    )
+    try:
 
-    if image_response.status_code != 200:
+        update = await request.json()
 
-        send_message(
-            chat_id,
-            "❌ Gagal mengunduh foto."
-        )
+        if "message" not in update:
+            return {"status": "ignored"}
 
-        return {"status": "error"}
+        message = update["message"]
+        chat_id = message["chat"]["id"]
 
-    original_data = image_response.content
-
-    original_size = len(original_data)
-
-    # ==========================
-    # 3b. Mode scanner: proses dengan OpenCV
-    # ==========================
-
-    if user_mode.get(chat_id) == "scan":
-
-        try:
-
-            scanned_data = scan_image(original_data)
-
-        except Exception:
+        # Handle commands
+        if "text" in message:
+            text = message.get("text", "")
+            if text.startswith("/start"):
+                send_message(
+                    chat_id,
+                    "Halo! Selamat datang di Bot Kompres Gambar.\n\n"
+                    "Gunakan menu berikut:\n"
+                    "/compress - Kompres foto\n"
+                    "/scanner - Scan foto jadi hitam-putih\n"
+                    "/help - Bantuan"
+                )
+                return {"status": "ok"}
+            elif text.startswith("/help"):
+                send_message(
+                    chat_id,
+                    "Bot ini dapat mengompres dan memindai gambar Anda.\n\n"
+                    "Cara pakai:\n"
+                    "1. Klik /compress atau /scanner\n"
+                    "2. Kirim foto (maks 4 MB)\n"
+                    "3. Bot akan mengirimkan hasilnya."
+                )
+                return {"status": "ok"}
+            elif text.startswith("/compress"):
+                user_mode[chat_id] = "compress"
+                send_message(
+                    chat_id,
+                    "Silakan kirimkan foto yang ingin Anda kompres."
+                )
+                return {"status": "ok"}
+            elif text.startswith("/scanner"):
+                user_mode[chat_id] = "scan"
+                send_message(
+                    chat_id,
+                    "Silakan kirimkan foto yang ingin dipindai.\n\n"
+                    "Bot akan mengubahnya menjadi dokumen hitam-putih yang bersih."
+                )
+                return {"status": "ok"}
+        # Jika bukan foto
+        if "photo" not in message:
 
             send_message(
                 chat_id,
-                "❌ Gagal memproses foto untuk discan."
+                "📷 Silakan kirim gambar untuk dikompres."
+            )
+
+            return {"status": "ok"}
+
+        # Ambil foto dengan resolusi terbesar
+        photo = message["photo"][-1]
+
+        file_id = photo["file_id"]
+
+        # ==========================
+        # 1. Ambil informasi file
+        # ==========================
+
+        file_info_response = requests.get(
+            f"{TELEGRAM_API}/getFile",
+            params={
+                "file_id": file_id
+            },
+            timeout=HTTP_TIMEOUT
+        )
+
+        file_info = file_info_response.json()
+
+        if not file_info.get("ok"):
+            send_message(
+                chat_id,
+                "❌ Gagal mendapatkan informasi foto."
             )
 
             return {"status": "error"}
+
+        file_data = file_info["result"]
+
+        file_path = file_data["file_path"]
+
+        # Telegram memberikan ukuran file
+        file_size = file_data.get("file_size", 0)
+
+        # ==========================
+        # 2. Cek ukuran file
+        # ==========================
+
+        if file_size > MAX_FILE_SIZE:
+
+            size_mb = file_size / (1024 * 1024)
+
+            send_message(
+                chat_id,
+                f"❌ Foto terlalu besar.\n\n"
+                f"📦 Ukuran foto: {size_mb:.2f} MB\n"
+                f"📏 Batas maksimal: 4 MB\n\n"
+                f"Silakan kirim foto dengan ukuran maksimal 4 MB."
+            )
+
+            return {
+                "status": "rejected",
+                "reason": "file_too_large"
+            }
+
+        # ==========================
+        # 3. Download foto
+        # ==========================
+
+        image_response = requests.get(
+            f"{TELEGRAM_FILE_API}/{file_path}",
+            timeout=HTTP_TIMEOUT
+        )
+
+        if image_response.status_code != 200:
+
+            send_message(
+                chat_id,
+                "❌ Gagal mengunduh foto."
+            )
+
+            return {"status": "error"}
+
+        original_data = image_response.content
+
+        original_size = len(original_data)
+
+        # ==========================
+        # 3b. Mode scanner: proses dengan OpenCV
+        # ==========================
+
+        if user_mode.get(chat_id) == "scan":
+
+            try:
+
+                scanned_data = scan_image(original_data)
+
+            except Exception:
+
+                logger.exception("Gagal scan gambar")
+
+                send_message(
+                    chat_id,
+                    "❌ Gagal memproses foto untuk discan."
+                )
+
+                return {"status": "error"}
+
+            response = requests.post(
+                f"{TELEGRAM_API}/sendPhoto",
+                files={
+                    "photo": (
+                        "scanned.jpg",
+                        scanned_data,
+                        "image/jpeg"
+                    )
+                },
+                data={
+                    "chat_id": chat_id,
+                    "caption": "✅ Foto berhasil di-scan!"
+                },
+                timeout=HTTP_TIMEOUT
+            )
+
+            if not response.ok:
+
+                send_message(
+                    chat_id,
+                    "❌ Foto berhasil di-scan, "
+                    "tetapi gagal mengirim hasilnya."
+                )
+
+                return {"status": "error"}
+
+            return {
+                "status": "success",
+                "mode": "scan"
+            }
+
+        # ==========================
+        # 4. Buka gambar
+        # ==========================
+
+        try:
+
+            image = Image.open(
+                BytesIO(original_data)
+            )
+
+        except Exception:
+
+            logger.exception("Gagal membuka gambar")
+
+            send_message(
+                chat_id,
+                "❌ File yang dikirim bukan gambar yang valid."
+            )
+
+            return {"status": "error"}
+
+        # ==========================
+        # 5. Konversi RGB
+        # ==========================
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        # ==========================
+        # 6. Kompres
+        # ==========================
+
+        output = BytesIO()
+
+        image.save(
+            output,
+            format="JPEG",
+            quality=40,
+            optimize=True
+        )
+
+        output.seek(0)
+
+        compressed_data = output.getvalue()
+
+        compressed_size = len(compressed_data)
+
+        # ==========================
+        # 7. Hitung penghematan
+        # ==========================
+
+        saved_bytes = original_size - compressed_size
+
+        if original_size > 0:
+            saved_percent = (
+                saved_bytes / original_size
+            ) * 100
+        else:
+            saved_percent = 0
+
+        original_mb = original_size / (1024 * 1024)
+        compressed_mb = compressed_size / (1024 * 1024)
+
+        # ==========================
+        # 8. Kirim hasil
+        # ==========================
+
+        caption = (
+            "✅ Gambar berhasil dikompres!\n\n"
+            f"📦 Sebelum : {original_mb:.2f} MB\n"
+            f"🗜️ Sesudah : {compressed_mb:.2f} MB\n"
+            f"💾 Hemat   : {saved_percent:.1f}%"
+        )
 
         response = requests.post(
             f"{TELEGRAM_API}/sendPhoto",
             files={
                 "photo": (
-                    "scanned.jpg",
-                    scanned_data,
+                    "compressed.jpg",
+                    compressed_data,
                     "image/jpeg"
                 )
             },
             data={
                 "chat_id": chat_id,
-                "caption": "✅ Foto berhasil di-scan!"
+                "caption": caption
             },
-            timeout=30
+            timeout=HTTP_TIMEOUT
         )
 
         if not response.ok:
 
             send_message(
                 chat_id,
-                "❌ Foto berhasil di-scan, "
+                "❌ Gambar berhasil dikompres, "
                 "tetapi gagal mengirim hasilnya."
             )
 
@@ -242,113 +384,30 @@ async def webhook(request: Request):
 
         return {
             "status": "success",
-            "mode": "scan"
+            "original_size": original_size,
+            "compressed_size": compressed_size,
+            "saved_percent": saved_percent
         }
-
-    # ==========================
-    # 4. Buka gambar
-    # ==========================
-
-    try:
-
-        image = Image.open(
-            BytesIO(original_data)
-        )
 
     except Exception:
 
-        send_message(
-            chat_id,
-            "❌ File yang dikirim bukan gambar yang valid."
-        )
+        # Jangan biarkan exception naik ke Telegram.
+        # HTTP 500 membuat Telegram me-retry update yang sama berulang kali.
+        logger.exception("Gagal memproses update Telegram")
 
-        return {"status": "error"}
+        try:
+            if chat_id is not None:
+                send_message(
+                    chat_id,
+                    "❌ Terjadi kesalahan di server. Silakan coba lagi."
+                )
+        except Exception:
+            logger.exception("Gagal mengirim pesan error ke user")
 
-    # ==========================
-    # 5. Konversi RGB
-    # ==========================
-
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-
-    # ==========================
-    # 6. Kompres
-    # ==========================
-
-    output = BytesIO()
-
-    image.save(
-        output,
-        format="JPEG",
-        quality=40,
-        optimize=True
-    )
-
-    output.seek(0)
-
-    compressed_data = output.getvalue()
-
-    compressed_size = len(compressed_data)
-
-    # ==========================
-    # 7. Hitung penghematan
-    # ==========================
-
-    saved_bytes = original_size - compressed_size
-
-    if original_size > 0:
-        saved_percent = (
-            saved_bytes / original_size
-        ) * 100
-    else:
-        saved_percent = 0
-
-    original_mb = original_size / (1024 * 1024)
-    compressed_mb = compressed_size / (1024 * 1024)
-
-    # ==========================
-    # 8. Kirim hasil
-    # ==========================
-
-    caption = (
-        "✅ Gambar berhasil dikompres!\n\n"
-        f"📦 Sebelum : {original_mb:.2f} MB\n"
-        f"🗜️ Sesudah : {compressed_mb:.2f} MB\n"
-        f"💾 Hemat   : {saved_percent:.1f}%"
-    )
-
-    response = requests.post(
-        f"{TELEGRAM_API}/sendPhoto",
-        files={
-            "photo": (
-                "compressed.jpg",
-                compressed_data,
-                "image/jpeg"
-            )
-        },
-        data={
-            "chat_id": chat_id,
-            "caption": caption
-        },
-        timeout=30
-    )
-
-    if not response.ok:
-
-        send_message(
-            chat_id,
-            "❌ Gambar berhasil dikompres, "
-            "tetapi gagal mengirim hasilnya."
-        )
-
-        return {"status": "error"}
-
-    return {
-        "status": "success",
-        "original_size": original_size,
-        "compressed_size": compressed_size,
-        "saved_percent": saved_percent
-    }
+        return {
+            "status": "error",
+            "reason": "internal_error"
+        }
 
 
 def send_message(chat_id, text):
@@ -359,5 +418,5 @@ def send_message(chat_id, text):
             "chat_id": chat_id,
             "text": text
         },
-        timeout=30
+        timeout=HTTP_TIMEOUT
     )
