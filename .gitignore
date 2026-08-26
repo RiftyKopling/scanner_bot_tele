@@ -1,0 +1,16 @@
+# Cache & artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Gambar uji & hasil tuning scanner
+samples/
+
+# Tooling debugging lokal (sengaja tidak masuk git)
+tests/
+requirements-dev.txt
+TUNING_SCANNER.txt
+
+# Lainnya
+.env
+.vscode/
