@@ -131,8 +131,7 @@ async def webhook(request: Request):
                 send_message(
                     chat_id,
                     "Silakan kirimkan foto yang ingin dipindai.\n\n"
-                    "Tolong kirim foto dokumen dengan warna background yang berbeda\n"
-                    "dari warna dokumen, dan pastikan dokumen tidak terpotong.\n"
+                    "Tolong kirim foto dokumen dengan warna background yang berbeda dari warna dokumen, dan pastikan dokumen tidak terpotong.\n"
                 )
                 return {"status": "ok"}
         # Jika bukan foto
