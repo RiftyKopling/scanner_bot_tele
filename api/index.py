@@ -5,12 +5,16 @@ from io import BytesIO
 
 from fastapi import FastAPI, UploadFile, File, Request
 from fastapi.responses import StreamingResponse
-from PIL import Image
 
 try:
     from api.scanner import scan_image
 except ImportError:
     from scanner import scan_image
+
+try:
+    from api.compress import compress_image, MAX_FILE_SIZE
+except ImportError:
+    from compress import compress_image, MAX_FILE_SIZE
 
 
 app = FastAPI()
@@ -19,9 +23,6 @@ BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TELEGRAM_FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
-
-# Batas ukuran file: 4 MB
-MAX_FILE_SIZE = 4 * 1024 * 1024
 
 # Timeout tiap call ke Telegram API.
 # Fungsi serverless (Vercel Hobby) dibunuh di 10 detik,
@@ -57,24 +58,14 @@ def home():
 @app.post("/api/compress")
 async def compress(file: UploadFile = File(...)):
 
-    image = Image.open(file.file)
-
-    if image.mode != "RGB":
-        image = image.convert("RGB")
-
-    output = BytesIO()
-
-    image.save(
-        output,
-        format="JPEG",
-        quality=40,
-        optimize=True
-    )
-
-    output.seek(0)
+    data = await file.read()
+    try:
+        compressed = compress_image(data)
+    except ValueError as e:
+        return {"status": "error", "reason": str(e)}
 
     return StreamingResponse(
-        output,
+        BytesIO(compressed),
         media_type="image/jpeg"
     )
 
@@ -140,7 +131,8 @@ async def webhook(request: Request):
                 send_message(
                     chat_id,
                     "Silakan kirimkan foto yang ingin dipindai.\n\n"
-                    "Bot akan mengubahnya menjadi dokumen hitam-putih yang bersih."
+                    "Tolong kirim foto dokumen dengan warna background yang berbeda\n"
+                    "dari warna dokumen, dan pastikan dokumen tidak terpotong.\n"
                 )
                 return {"status": "ok"}
         # Jika bukan foto
@@ -283,54 +275,29 @@ async def webhook(request: Request):
             }
 
         # ==========================
-        # 4. Buka gambar
+        # 4. Kompres via modul
         # ==========================
 
         try:
-
-            image = Image.open(
-                BytesIO(original_data)
-            )
-
-        except Exception:
-
-            logger.exception("Gagal membuka gambar")
-
+            compressed_data = compress_image(original_data)
+        except ValueError as e:
             send_message(
                 chat_id,
-                "❌ File yang dikirim bukan gambar yang valid."
+                f"❌ {e}"
             )
-
             return {"status": "error"}
-
-        # ==========================
-        # 5. Konversi RGB
-        # ==========================
-
-        if image.mode != "RGB":
-            image = image.convert("RGB")
-
-        # ==========================
-        # 6. Kompres
-        # ==========================
-
-        output = BytesIO()
-
-        image.save(
-            output,
-            format="JPEG",
-            quality=40,
-            optimize=True
-        )
-
-        output.seek(0)
-
-        compressed_data = output.getvalue()
+        except Exception:
+            logger.exception("Gagal mengompres gambar")
+            send_message(
+                chat_id,
+                "❌ Gagal mengompres foto."
+            )
+            return {"status": "error"}
 
         compressed_size = len(compressed_data)
 
         # ==========================
-        # 7. Hitung penghematan
+        # 5. Hitung penghematan
         # ==========================
 
         saved_bytes = original_size - compressed_size
@@ -346,7 +313,7 @@ async def webhook(request: Request):
         compressed_mb = compressed_size / (1024 * 1024)
 
         # ==========================
-        # 8. Kirim hasil
+        # 6. Kirim hasil
         # ==========================
 
         caption = (
