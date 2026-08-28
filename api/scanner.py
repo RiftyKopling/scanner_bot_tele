@@ -21,6 +21,9 @@ def scan_image(image_bytes: bytes) -> bytes:
 
     if img is None:
         raise ValueError("Gambar tidak valid atau gagal di-decode")
+    
+    # buat benerin error rasio    
+    img_asli = img.copy()
 
     # jika resolusi gambar terlalu besar turunkan
     h_asli, w_asli = img.shape[:2]  # ambil tinggi dan lebar asli gambar
@@ -194,7 +197,7 @@ def scan_image(image_bytes: bytes) -> bytes:
     )  # kalikan koordinat sudut dengan rasio resize
 
     hasil_warna = perspective_transform(
-        img, titik_sudut_asli
+        img_asli, titik_sudut_asli
     )  # terapkan transformasi perspektif ke citra asli
 
     hasil_gray = cv2.cvtColor(
