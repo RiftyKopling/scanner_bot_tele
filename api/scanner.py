@@ -5,231 +5,150 @@ import numpy as np  # library numerik untuk operasi array
 tinggi_maks = 800  # batas maksimum tinggi dalam pixel
 
 
+def urutkan_titik(pts):
+    """Urutkan 4 titik jadi: top-left, top-right, bottom-right, bottom-left."""
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]
+    rect[2] = pts[np.argmax(s)]
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]
+    rect[3] = pts[np.argmax(diff)]
+    return rect
+
+
+def four_point_transform(image, pts):
+    """Melakukan transformasi perspektif untuk meratakan gambar."""
+    rect = urutkan_titik(pts)
+    (tl, tr, br, bl) = rect
+
+    widthA = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+    widthB = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+    maxWidth = max(int(widthA), int(widthB))
+
+    heightA = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+    heightB = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+    maxHeight = max(int(heightA), int(heightB))
+
+    dst = np.array([
+        [0, 0],
+        [maxWidth - 1, 0],
+        [maxWidth - 1, maxHeight - 1],
+        [0, maxHeight - 1]], dtype="float32")
+
+    M = cv2.getPerspectiveTransform(rect, dst)
+    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+    return warped
+
+
+def get_odd_size(lebar, pembagi):
+    """Hitung ukuran kernel ganjil untuk operasi morfologi."""
+    ukuran = max(3, lebar // pembagi)
+    return ukuran + 1 if ukuran % 2 == 0 else ukuran
+
+
 def scan_image(image_bytes: bytes) -> bytes:
-    """Ubah foto Telegram menjadi bersih:
+    """Ubah foto Telegram menjadi bersih (mirip CamScanner):
     1. Decode ke OpenCV
-    2. Grayscale (cvtColor)
-    3. Reduksi noise (GaussianBlur)
-    4. Adaptive threshold -> hitam-putih
-    5. Encode kembali ke JPEG dan kembalikan bytes.
+    2. HSV masking + morfologi untuk isolasi dokumen
+    3. Canny edge detection + dilasi
+    4. Cari kontur terbesar -> minAreaRect -> 4 sudut
+    5. Perspective transform (warping)
+    6. Enhancement (CLAHE, contrast, bilateral filter, detail enhance)
+    7. Encode kembali ke PNG dan kembalikan bytes.
     """
     # 1. Decode bytes gambar ke array OpenCV
-    nparr = np.frombuffer(image_bytes, np.uint8)  # ubah bytes jadi array numerik uint8
-    img = cv2.imdecode(
-        nparr, cv2.IMREAD_COLOR
-    )  # decode array ke citra OpenCV warna (BGR)
+    nparr = np.frombuffer(image_bytes, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
     if img is None:
         raise ValueError("Gambar tidak valid atau gagal di-decode")
-    
-    # buat benerin error rasio    
+
     img_asli = img.copy()
 
-    # jika resolusi gambar terlalu besar turunkan
-    h_asli, w_asli = img.shape[:2]  # ambil tinggi dan lebar asli gambar
-    rasio = 1.0  # inisialisasi rasialisasi 1.0 (tidak di-resize)
-    if h_asli > tinggi_maks:  # jika gambar lebih tinggi dari batas maks
-        rasio = img.shape[0] / float(tinggi_maks)  # hitung faktor pengurangi tinggi
-        img = cv2.resize(
-            img, (int(img.shape[1] / rasio), tinggi_maks)
-        )  # resize lebar seperlimal tinggi
+    # Resize jika terlalu besar
+    h_asli, w_asli = img.shape[:2]
+    rasio = 1.0
+    if h_asli > tinggi_maks:
+        rasio = img.shape[0] / float(tinggi_maks)
+        img = cv2.resize(img, (int(img.shape[1] / rasio), tinggi_maks))
 
-    # ubah jadi grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)  # konversi citra warna ke grayscale
+    # 2. Pre-processing: HSV masking untuk isolasi dokumen (putih/terang)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    # Blur adaptif berdasarkan lebar gambar
+    blur_ksize = max(3, img.shape[1] // 100)
+    if blur_ksize % 2 == 0:
+        blur_ksize += 1
+    hsv = cv2.blur(hsv, (blur_ksize, blur_ksize))
 
-    # blur
-    blur = cv2.GaussianBlur(
-        gray, (5, 5), 0
-    )  # smooth gambar dengan Gaussian Blur kernel 5x5
+    # Mask area putih/terang (dokumen biasanya putih)
+    # H: 0-180, S: 0-60 (low saturation = putih/abu), V: 150-255 (terang)
+    thresh_inrange = 255 - cv2.inRange(hsv, (0, 0, 150), (180, 60, 255))
 
-    # edged
-    edged = cv2.Canny(blur, 75, 200)  # deteksi tepi menggunakan Canny threshold 75-200
+    # 3. Operasi morfologi: OPEN (hilang noise kecil) + CLOSE (sambung tepi putus)
+    w = img.shape[1]
+    k_open = cv2.getStructuringElement(cv2.MORPH_RECT, (get_odd_size(w, 150), get_odd_size(w, 150)))
+    k_close = cv2.getStructuringElement(cv2.MORPH_RECT, (get_odd_size(w, 80), get_odd_size(w, 80)))
 
-    # dilasi tipis: menyambung tepi yang terputus putus supaya kontur
-    # dokumen menjadi utuh
-    kernel = np.ones((3, 3), np.uint8)  # kernel struktur elemen dilasi 3x3
-    edged = cv2.dilate(
-        edged, kernel, iterations=1
-    )  # melapisi tepi untuk menyambungkan kontur putus
+    thresh = cv2.morphologyEx(thresh_inrange, cv2.MORPH_OPEN, k_open, iterations=1)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, k_close, iterations=1)
 
-    kontur, _ = cv2.findContours(
-        edged.copy(), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE
-    )  # cari semua kontur di citra edged
-    kontur = sorted(kontur, key=cv2.contourArea, reverse=True)[
-        :5
-    ]  # urutkan kontur berdasarkan luas, ambil 5 terbesar
+    # 4. Deteksi tepi Canny + dilasi tipis
+    edges = cv2.Canny(thresh, 50, 100, apertureSize=7)
+    dilate_ksize = max(3, img.shape[1] // 50)
+    if dilate_ksize % 2 == 0:
+        dilate_ksize += 1
+    k_dilate = cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_ksize, dilate_ksize))
+    edges_dilated = cv2.morphologyEx(edges, cv2.MORPH_DILATE, k_dilate, iterations=1)
 
-    h, w = img.shape[:2]  # ambil tinggi dan lebar setelah resize (jika ada)
-    toleransi_tepi = 10  # piksel, untuk anggap "menyentuh" tepi bawah  # toleransi 10 pixel untuk deteksi tepi bawah
+    # 5. Cari kontur batas dokumen
+    contours, _ = cv2.findContours(edges_dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
 
-    titik_sudut = None  # variabel untuk menyimpan 4 sudut dokumen
+    titik_sudut = None
+    if len(contours) > 0:
+        # Ambil kontur terbesar (asumsi ini adalah dokumennya)
+        main_contour = max(contours, key=len)
+        # minAreaRect memberikan rotated rectangle yang tight fit ke kontur
+        bbox = cv2.minAreaRect(main_contour)
+        box = cv2.boxPoints(bbox)
+        box = np.int32(box)  # ubah ke integer
+        titik_sudut = box.reshape(4, 2)
 
-    # --- Coba cara normal dulu: cari kontur yang persis 4 titik ---
-    for c in kontur:  # iterasi tiap kontur terbesar
-        keliling = cv2.arcLength(c, True)  # hitung keliling kontur
-        approx = cv2.approxPolyDP(
-            c, 0.02 * keliling, True
-        )  # pendekatan poligon dengan toleransi 2% dari keliling
-        if len(approx) == 4:  # jika ada 4 titik (persegi/persegi panjang)
-            titik_sudut = approx.reshape(4, 2)  # simpan 4 titik sudut
-            break  # keluar dari loop
+    # Fallback: pakai seluruh frame
+    if titik_sudut is None:
+        h, w = img.shape[:2]
+        titik_sudut = np.array([[0, 0], [w, 0], [w, h], [0, h]], dtype="float32")
 
-    # --- Kalau gagal, cek apakah kontur terbesar "menyentuh" tepi bawah gambar ---
-    if (
-        titik_sudut is None and len(kontur) > 0
-    ):  # jika tidak ditemukan 4 titus tapi ada kontur
-        hull = cv2.convexHull(kontur[0])  # hitung convex hull dari kontur terbesar
-        kontur_terbesar = hull.reshape(-1, 2)  # ubah bentuk menjadi array titik 2D
-        y_maks = kontur_terbesar[:, 1].max()  # titik tertinggi pada sumbu Y
-        menyentuh_bawah = y_maks >= (
-            h - 1 - toleransi_tepi
-        )  # apakah kontur menyentuh tepi bawah (dengan toleransi)
+    # 6. Perspective transform (warping) - gunakan gambar asli untuk kualitas terbaik
+    titik_sudut_asli = titik_sudut.astype("float32") * rasio
+    warped = four_point_transform(img_asli, titik_sudut_asli)
 
-        if menyentuh_bawah:  # jika menyentuh tepi bawah
-            y_tengah = h / 2  # garis tengah gambar secara vertikal
-            titik_atas = kontur_terbesar[
-                kontur_terbesar[:, 1] < y_tengah
-            ]  # titik di atas tengah
-            titik_bawah = kontur_terbesar[
-                kontur_terbesar[:, 1] >= y_tengah
-            ]  # titik di bawah atau pada tengah
+    # 7. Enhancement pipeline (mirip CamScanner)
+    # CLAHE untuk brightness/contrast lokal
+    clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(16, 16))
+    warped_hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+    warped_hsv[:, :, 2] = clahe.apply(warped_hsv[:, :, 2])
+    enhanced = cv2.cvtColor(warped_hsv, cv2.COLOR_HSV2BGR)
 
-            if (
-                len(titik_atas) > 0 and len(titik_bawah) > 0
-            ):  # pastikan ada titik di keduanya
-                s_atas = (
-                    titik_atas[:, 0] + titik_atas[:, 1]
-                )  # jumlah x+y untuk setiap titik Atas
-                diff_atas = (
-                    titik_atas[:, 0] - titik_atas[:, 1]
-                )  # perbedaan x-y untuk titik Atas
+    # Contrast & brightness adjustment
+    enhanced = np.uint8(np.clip(1.7 * np.float32(enhanced) - 100, 0, 255))
+    enhanced = np.ascontiguousarray(enhanced)
 
-                top_left = titik_atas[
-                    np.argmin(s_atas)
-                ]  # titik kiri atas (x+y terkecil)
-                top_right = titik_atas[
-                    np.argmax(diff_atas)
-                ]  # titik kanan atas (x-y terkecil)
+    # Bilateral filter untuk smoothing sambil jaga tepi
+    enhanced = cv2.bilateralFilter(enhanced, 9, 75, 75)
 
-                bottom_left_x = titik_bawah[np.argmin(titik_bawah[:, 0])][
-                    0
-                ]  # lebar kiri bawah
-                bottom_right_x = titik_bawah[np.argmax(titik_bawah[:, 0])][
-                    0
-                ]  # lebar kanan bawah
+    # Detail enhance untuk sharpness
+    enhanced = cv2.detailEnhance(enhanced, sigma_s=3, sigma_r=0.15)
 
-                bottom_left = np.array(
-                    [bottom_left_x, h - 1]
-                )  # titik kiri bawah (dipotong ke bawah)
-                bottom_right = np.array(
-                    [bottom_right_x, h - 1]
-                )  # kanan bawah (dipotong ke bawah)
-
-                titik_sudut = np.array(
-                    [top_left, top_right, bottom_right, bottom_left]
-                )  # susun ulang 4 sudut
-                print(
-                    "Sisi bawah dokumen terpotong frame, tepi bawah gambar dipakai sebagai pengganti."
-                )  # catatan log
-
-    # --- Fallback terakhir: pakai seluruh frame ---
-    if titik_sudut is None:  # jika tidak ditemukan pun sudut punapa
-        print(
-            "Kontur 4 sisi tidak ditemukan, fallback pakai seluruh frame."
-        )  # catatan log
-        titik_sudut = np.array(
-            [[0, 0], [w, 0], [w, h], [0, h]]
-        )  # gunakan seluruh frame sebagai ROI
-
-    def urutkan_titik(pts):
-        """Urutkan 4 titik jadi: top-left, top-right, bottom-right, bottom-left."""
-        rect = np.zeros(
-            (4, 2), dtype="float32"
-        )  # array kosong untuk menampung 4 titur urut
-
-        s = pts.sum(axis=1)  # hitung x+y untuk setiap titik
-        rect[0] = pts[np.argmin(s)]  # top-left     -> titik dengan x+y terkecil
-        rect[2] = pts[np.argmax(s)]  # bottom-right -> titik dengan x+y terbesar
-
-        diff = np.diff(pts, axis=1)  # hitung x-y untuk setiap titik
-        rect[1] = pts[np.argmin(diff)]  # top-right -> titik dengan x-y terkecil
-        rect[3] = pts[np.argmax(diff)]  # bottom-left -> titik dengan x-y terbesar
-
-        return rect  # kembalikan array 4 titur terurut
-
-    def perspective_transform(image, pts):
-        rect = urutkan_titik(pts)  # urutkan 4 titik sudut ke format standar
-        tl, tr, br, bl = (
-            rect  # pecah ke 4 titik: kiri atas, kanan atas, kanan bawah, kiri bawah
-        )
-
-        lebar_bawah = np.linalg.norm(br - bl)  # hitung panjang sisi kiri bawah
-        lebar_atas = np.linalg.norm(tr - tl)  # hitung panjang sisi atas
-        lebar_maks = int(
-            max(lebar_bawah, lebar_atas)
-        )  # lebar maksimum dari atas dan bawah
-
-        tinggi_kanan = np.linalg.norm(tr - br)  # hitung tinggi kanan
-        tinggi_kiri = np.linalg.norm(tl - bl)  # hitung tinggi kiri
-        tinggi_maks = int(max(tinggi_kanan, tinggi_kiri))  # tinggi maksimum
-
-        dst = np.array(
-            [  # titik tujuan untuk pemetaan perspektif
-                [0, 0],  # kiri atas
-                [lebar_maks - 1, 0],  # kanan atas
-                [lebar_maks - 1, tinggi_maks - 1],  # kanan bawah
-                [0, tinggi_maks - 1],  # kiri bawah
-            ],
-            dtype="float32",
-        )
-
-        M = cv2.getPerspectiveTransform(
-            rect, dst
-        )  # hitung matriks transformasi perspektif
-        hasil = cv2.warpPerspective(
-            image, M, (lebar_maks, tinggi_maks)
-        )  # terapkan transformasi
-        return hasil  # kembalikan gambar setelah transformasi
-
-    # Skala titik sudut balik ke ukuran gambar asli (bukan yang sudah di-resize)
-    titik_sudut_asli = (
-        titik_sudut.astype("float32") * rasio
-    )  # kalikan koordinat sudut dengan rasio resize
-
-    hasil_warna = perspective_transform(
-        img_asli, titik_sudut_asli
-    )  # terapkan transformasi perspektif ke citra asli
-
-    hasil_gray = cv2.cvtColor(
-        hasil_warna, cv2.COLOR_BGR2GRAY
-    )  # konversi hasil warna ke grayscale lagi (sekaligus memastikan format)
-
-    # 3.  Adaptive threshold -> hasil hitam-putih bersih
-    scanned = cv2.adaptiveThreshold(
-        hasil_gray,  # citra grayscale input
-        255,  # nilai maksimum pixel output
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,  # metode adaptif Gaussian-weighted sum
-        cv2.THRESH_BINARY,  # threshold binary (0 atau 255)
-        25,  # ukuran blok adaptif
-        7,  # konstanta C dikurangi dari mean
+    # 8. Convert ke grayscale dan adaptive threshold untuk hasil hitam-putih bersih
+    gray = cv2.cvtColor(enhanced, cv2.COLOR_BGR2GRAY)
+    final = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 25, 7
     )
 
-    # test otsu thresholding
-    # ret, scanned = cv2.threshold(
-    #     smoothed, 0, 255,
-    #     cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    # )
+    # 9. Encode menjadi PNG bytes
+    ok, enc = cv2.imencode(".png", final)
+    if not ok:
+        raise RuntimeError("Gagal meng-encode gambar hasil scan")
 
-    # 4. Cleanup akhir 
-    # ojo nggo iki lek rusak
-    # final = cv2.medianBlur(
-    #     scanned, 3
-    # )  # blur median 3x3 untuk menghilangkan noise pepper-and-salt
-    final = scanned
-
-    # 5. Encode menjadi PNG bytes
-    ok, enc = cv2.imencode(".png", final)  # encode citra jadi format PNG
-    if not ok:  # jika encode gagal
-        raise RuntimeError("Gagal meng-encode gambar hasil scan")  # tampilkan error
-
-    return enc.tobytes()  # kembalikan hasil sebagai bytes PNG
+    return enc.tobytes()
