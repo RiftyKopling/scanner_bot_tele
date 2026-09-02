@@ -1,6 +1,7 @@
 import os
 import logging
 import requests
+import json
 
 from fastapi import FastAPI, Request
 
@@ -43,6 +44,45 @@ def _validate_webhook_secret(request: Request) -> bool:
     return request.headers.get("X-Telegram-Bot-Api-Secret-Token") == WEBHOOK_SECRET
 
 
+def _build_inline_keyboard():
+    """Buat inline keyboard untuk menu utama."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📷 Scan Dokumen", "callback_data": "cmd_scanner"},
+                {"text": "❓ Bantuan", "callback_data": "cmd_help"}
+            ],
+            [
+                {"text": "ℹ️ Status", "callback_data": "cmd_status"}
+            ]
+        ]
+    }
+
+
+def _build_help_keyboard():
+    """Buat inline keyboard untuk halaman bantuan."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📷 Scan Dokumen", "callback_data": "cmd_scanner"},
+                {"text": "🏠 Menu Utama", "callback_data": "cmd_start"}
+            ]
+        ]
+    }
+
+
+def _build_status_keyboard():
+    """Buat inline keyboard untuk halaman status."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📷 Scan Dokumen", "callback_data": "cmd_scanner"},
+                {"text": "🏠 Menu Utama", "callback_data": "cmd_start"}
+            ]
+        ]
+    }
+
+
 @app.get("/api")
 def home():
     return {
@@ -71,6 +111,10 @@ async def webhook(request: Request):
 
         update = await request.json()
 
+        # Handle callback query (inline keyboard button press)
+        if "callback_query" in update:
+            return await handle_callback_query(update["callback_query"])
+
         if "message" not in update:
             return {"status": "ignored"}
 
@@ -81,40 +125,34 @@ async def webhook(request: Request):
         if "text" in message:
             text = message.get("text", "")
             if text.startswith("/start"):
-                send_message(
-                    chat_id,
-                    "Halo! Selamat datang di Bot Scan Dokumen.\n\n"
-                    "Gunakan menu berikut:\n"
-                    "/scanner - Scan foto jadi hitam-putih (CamScanner style)\n"
-                    "/help - Bantuan"
-                )
-                return {"status": "ok"}
+                return await send_start_message(chat_id)
             elif text.startswith("/help"):
-                send_message(
-                    chat_id,
-                    "Bot ini memindai foto dokumen menjadi hitam-putih bersih.\n\n"
-                    "Cara pakai:\n"
-                    "1. Klik /scanner\n"
-                    "2. Kirim foto dokumen (maks 4 MB)\n"
-                    "3. Bot akan mengirimkan hasil scan-nya.\n\n"
-                    "Tips: Gunakan background berwarna kontras dengan dokumen, "
-                    "dan pastikan dokumen tidak terpotong."
-                )
-                return {"status": "ok"}
+                return await send_help_message(chat_id)
+            elif text.startswith("/status"):
+                return await send_status_message(chat_id)
             elif text.startswith("/scanner"):
                 user_mode[chat_id] = "scan"
-                send_message(
+                await send_message(
                     chat_id,
+                    "📷 *Mode Scan Dokumen Aktif*\n\n"
                     "Silakan kirimkan foto yang ingin dipindai.\n\n"
-                    "Tolong kirim foto dokumen dengan warna background yang berbeda dari warna dokumen, dan pastikan dokumen tidak terpotong.\n"
+                    "💡 *Tips hasil terbaik:*\n"
+                    "• Background kontras dengan dokumen\n"
+                    "• Dokumen tidak terpotong\n"
+                    "• Cahaya merata, hindari bayangan\n"
+                    "• Kamera tegak lurus ke dokumen",
+                    reply_markup=_build_help_keyboard()
                 )
                 return {"status": "ok"}
+
         # Jika bukan foto
         if "photo" not in message:
 
-            send_message(
+            await send_message(
                 chat_id,
-                "📷 Silakan kirim foto untuk di-scan."
+                "📷 *Silakan kirim foto untuk di-scan.*\n\n"
+                "Gunakan tombol di bawah atau ketik `/scanner` untuk memulai.",
+                reply_markup=_build_inline_keyboard()
             )
 
             return {"status": "ok"}
@@ -139,7 +177,7 @@ async def webhook(request: Request):
         file_info = file_info_response.json()
 
         if not file_info.get("ok"):
-            send_message(
+            await send_message(
                 chat_id,
                 "❌ Gagal mendapatkan informasi foto."
             )
@@ -161,9 +199,9 @@ async def webhook(request: Request):
 
             size_mb = file_size / (1024 * 1024)
 
-            send_message(
+            await send_message(
                 chat_id,
-                f"❌ Foto terlalu besar.\n\n"
+                f"❌ *Foto terlalu besar.*\n\n"
                 f"📦 Ukuran foto: {size_mb:.2f} MB\n"
                 f"📏 Batas maksimal: 4 MB\n\n"
                 f"Silakan kirim foto dengan ukuran maksimal 4 MB."
@@ -185,7 +223,7 @@ async def webhook(request: Request):
 
         if image_response.status_code != 200:
 
-            send_message(
+            await send_message(
                 chat_id,
                 "❌ Gagal mengunduh foto."
             )
@@ -210,7 +248,7 @@ async def webhook(request: Request):
 
                 logger.exception("Gagal scan gambar")
 
-                send_message(
+                await send_message(
                     chat_id,
                     "❌ Gagal memproses foto untuk discan."
                 )
@@ -235,7 +273,7 @@ async def webhook(request: Request):
 
             if not response.ok:
 
-                send_message(
+                await send_message(
                     chat_id,
                     "❌ Foto berhasil di-scan, "
                     "tetapi gagal mengirim hasilnya."
@@ -253,7 +291,7 @@ async def webhook(request: Request):
             scanned_data = scan_image(original_data)
         except Exception:
             logger.exception("Gagal scan gambar")
-            send_message(
+            await send_message(
                 chat_id,
                 "❌ Gagal memproses foto untuk discan."
             )
@@ -276,7 +314,7 @@ async def webhook(request: Request):
         )
 
         if not response.ok:
-            send_message(
+            await send_message(
                 chat_id,
                 "❌ Foto berhasil di-scan, "
                 "tetapi gagal mengirim hasilnya."
@@ -296,7 +334,7 @@ async def webhook(request: Request):
 
         try:
             if chat_id is not None:
-                send_message(
+                await send_message(
                     chat_id,
                     "❌ Terjadi kesalahan di server. Silakan coba lagi."
                 )
@@ -309,13 +347,111 @@ async def webhook(request: Request):
         }
 
 
-def send_message(chat_id, text):
+async def handle_callback_query(callback_query):
+    """Handle inline keyboard button presses."""
+    chat_id = callback_query["message"]["chat"]["id"]
+    data = callback_query.get("data", "")
+    callback_query_id = callback_query["id"]
+
+    # Answer callback query to remove loading state
+    requests.post(
+        f"{TELEGRAM_API}/answerCallbackQuery",
+        data={"callback_query_id": callback_query_id},
+        timeout=HTTP_TIMEOUT
+    )
+
+    if data == "cmd_start":
+        return await send_start_message(chat_id)
+    elif data == "cmd_help":
+        return await send_help_message(chat_id)
+    elif data == "cmd_status":
+        return await send_status_message(chat_id)
+    elif data == "cmd_scanner":
+        user_mode[chat_id] = "scan"
+        await send_message(
+            chat_id,
+            "📷 *Mode Scan Dokumen Aktif*\n\n"
+            "Silakan kirimkan foto yang ingin dipindai.\n\n"
+            "💡 *Tips hasil terbaik:*\n"
+            "• Background kontras dengan dokumen\n"
+            "• Dokumen tidak terpotong\n"
+            "• Cahaya merata, hindari bayangan\n"
+            "• Kamera tegak lurus ke dokumen",
+            reply_markup=_build_help_keyboard()
+        )
+        return {"status": "ok"}
+
+    return {"status": "ignored"}
+
+
+async def send_start_message(chat_id):
+    """Kirim pesan menu utama dengan inline keyboard."""
+    text = (
+        "📄 *Bot Scan Dokumen*\n\n"
+        "┌─ *PERINTAH* ────────────────────────┐\n"
+        "│ `/scanner` ─ Mode scan dokumen      │\n"
+        "│ `/help`    ─ Bantuan detail         │\n"
+        "│ `/status`  ─ Cek mode & batas file  │\n"
+        "└─────────────────────────────────────┘\n\n"
+        "📏 Batas: 4 MB per foto\n"
+        "📤 Hasil: PNG hitam-putih via chat\n\n"
+        "Kirim foto setelah klik `/scanner` atau gunakan tombol di bawah:"
+    )
+    await send_message(chat_id, text, reply_markup=_build_inline_keyboard())
+    return {"status": "ok"}
+
+
+async def send_help_message(chat_id):
+    """Kirim pesan bantuan detail dengan inline keyboard."""
+    text = (
+        "📖 *CARA PAKAI OPTIMAL*\n\n"
+        "1️⃣ Klik `/scanner` atau tombol *Scan Dokumen*\n"
+        "2️⃣ Ambil foto dokumen:\n"
+        "   ✅ Background kontras (hitam/putih)\n"
+        "   ✅ Dokumen tidak terpotong\n"
+        "   ✅ Cahaya merata, hindari bayangan\n"
+        "   ❌ Jangan miring ekstrem (>30°)\n\n"
+        "💡 *TIPS HASIL TERBAIK:*\n"
+        "• Kertas putih di atas meja gelap\n"
+        "• Kamera tegak lurus ke dokumen\n"
+        "• Fokus tajam (tap layar HP)\n\n"
+        "⚠️ *BATASAN:*\n"
+        "• Maks 4 MB (Telegram kompres otomatis)\n"
+        "• Flat scan — belum auto-crop sudut\n"
+        "• Hasil PNG → Telegram bisa kompres ulang"
+    )
+    await send_message(chat_id, text, reply_markup=_build_help_keyboard())
+    return {"status": "ok"}
+
+
+async def send_status_message(chat_id):
+    """Kirim info status bot dengan inline keyboard."""
+    mode = user_mode.get(chat_id, "belum dipilih")
+    mode_text = "📷 Scanner aktif" if mode == "scan" else "⏳ Belum dipilih"
+
+    text = (
+        f"ℹ️ *STATUS BOT*\n\n"
+        f"Mode: {mode_text}\n"
+        f"Batas file: 4 MB\n"
+        f"Format output: PNG (hitam-putih)\n"
+        f"Session: in-memory (reset saat restart)"
+    )
+    await send_message(chat_id, text, reply_markup=_build_status_keyboard())
+    return {"status": "ok"}
+
+
+async def send_message(chat_id, text, parse_mode="Markdown", reply_markup=None):
+    """Kirim pesan ke Telegram dengan dukungan Markdown dan inline keyboard."""
+    data = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode
+    }
+    if reply_markup:
+        data["reply_markup"] = json.dumps(reply_markup)
 
     requests.post(
         f"{TELEGRAM_API}/sendMessage",
-        data={
-            "chat_id": chat_id,
-            "text": text
-        },
+        data=data,
         timeout=HTTP_TIMEOUT
     )
