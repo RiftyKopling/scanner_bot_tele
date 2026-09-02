@@ -3,3 +3,4 @@ python-multipart
 requests
 opencv-python-headless
 numpy
+fpdf2
