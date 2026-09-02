@@ -1,12 +1,11 @@
 # scanner_bot_tele
 
-Bot Telegram berbasis **FastAPI** untuk kompresi gambar dan pemindaian dokumen (document scanner) sederhana menggunakan **OpenCV**. Bot berjalan sebagai webhook dan di-deploy sebagai serverless function (Vercel).
+Bot Telegram berbasis **FastAPI** untuk pemindaian dokumen (document scanner) sederhana menggunakan **OpenCV**. Bot berjalan sebagai webhook dan di-deploy sebagai serverless function (Vercel).
 
 🔗 Demo/endpoint: [test-bot-tele-iota.vercel.app](https://test-bot-tele-iota.vercel.app)
 
 ## Fitur
 
-- **`/compress`** — Mengompres foto menjadi JPEG kualitas rendah (quality 40) untuk menghemat ukuran file, lengkap dengan info persentase penghematan.
 - **`/scanner`** — Mengubah foto dokumen menjadi versi hitam-putih yang lebih bersih, melalui pipeline OpenCV:
   1. Resize otomatis jika lebar gambar > 1600px
   2. Grayscale
@@ -15,24 +14,28 @@ Bot Telegram berbasis **FastAPI** untuk kompresi gambar dan pemindaian dokumen (
   5. Adaptive thresholding (`ADAPTIVE_THRESH_GAUSSIAN_C`)
   6. Cleanup akhir dengan median blur
 - Validasi ukuran file (maksimal **4 MB** per foto yang dikirim ke bot)
-- Mode per-pengguna disimpan sementara (in-memory) untuk membedakan permintaan `/compress` vs `/scanner`
+- Mode per-pengguna disimpan sementara (in-memory) untuk membedakan permintaan `/scanner`
 
 ## Struktur proyek
 
 ```
 scanner_bot_tele/
 ├── api/
-│   ├── index.py       # Endpoint FastAPI: webhook, /api/compress, /api/webhook
+│   ├── index.py       # Endpoint FastAPI: webhook, /api/webhook
 │   └── scanner.py      # Pipeline OpenCV untuk fitur scan_image()
+├── tests/
+│   ├── test_scan_image.py   # unit test pytest scanner
+│   ├── test_scanner.py      # CLI tuning preset scanner
+│   └── send_to_scanner.py   # uji manual satu gambar + matplotlib
+├── samples/           # gambar uji (gitignored)
 ├── requirements.txt
-└── test.txt
+└── requirements-dev.txt
 ```
 
 ## Tech stack
 
 - [FastAPI](https://fastapi.tiangolo.com/) — web framework
 - [OpenCV (headless)](https://pypi.org/project/opencv-python-headless/) — image processing untuk fitur scanner
-- [Pillow](https://pillow.readthedocs.io/) — kompresi gambar
 - [Requests](https://docs.python-requests.org/) — komunikasi dengan Telegram Bot API
 - Deploy target: **Vercel** (struktur `api/` mengikuti konvensi Vercel Python Serverless Functions)
 
@@ -50,7 +53,7 @@ cd scanner_bot_tele
 ```bash
 python -m venv venv
 source venv/bin/activate      # Windows: venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt -r requirements-dev.txt
 ```
 
 ### 3. Siapkan environment variable
@@ -90,18 +93,16 @@ curl "https://api.telegram.org/bot<TELEGRAM_BOT_TOKEN>/setWebhook?url=<URL_NGROK
 
 ## Endpoint API
 
-| Method | Endpoint          | Deskripsi                                                        |
-|--------|-------------------|--------------------------------------------------------------------|
-| GET    | `/api`            | Health check, memastikan API berjalan                             |
-| POST   | `/api/compress`   | Upload gambar langsung (multipart/form-data) untuk dikompres      |
-| POST   | `/api/webhook`    | Endpoint webhook yang menerima update dari Telegram Bot API       |
+| Method | Endpoint       | Deskripsi                                                        |
+|--------|----------------|--------------------------------------------------------------------|
+| GET    | `/api`         | Health check, memastikan API berjalan                             |
+| POST   | `/api/webhook` | Endpoint webhook yang menerima update dari Telegram Bot API       |
 
 ## Cara pakai bot di Telegram
 
 1. `/start` — Menampilkan menu utama
-2. `/compress` — Mengaktifkan mode kompresi, lalu kirim foto
-3. `/scanner` — Mengaktifkan mode scan dokumen, lalu kirim foto
-4. `/help` — Menampilkan bantuan penggunaan
+2. `/scanner` — Mengaktifkan mode scan dokumen, lalu kirim foto
+3. `/help` — Menampilkan bantuan penggunaan
 
 Bot akan menolak foto dengan ukuran lebih dari 4 MB dan meminta pengguna mengirim ulang dengan ukuran yang lebih kecil.
 

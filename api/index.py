@@ -1,20 +1,13 @@
 import os
 import logging
 import requests
-from io import BytesIO
 
-from fastapi import FastAPI, UploadFile, File, Request
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, Request
 
 try:
     from api.scanner import scan_image
 except ImportError:
     from scanner import scan_image
-
-try:
-    from api.compress import compress_image, MAX_FILE_SIZE
-except ImportError:
-    from compress import compress_image, MAX_FILE_SIZE
 
 
 app = FastAPI()
@@ -34,7 +27,10 @@ HTTP_TIMEOUT = 8
 # saat memanggil setWebhook. Jika tidak diset, validasi dilewati.
 WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
 
-# Menyimpan mode tiap pengguna: "compress" atau "scan"
+# Batas ukuran file: 4 MB
+MAX_FILE_SIZE = 4 * 1024 * 1024
+
+# Menyimpan mode tiap pengguna: "scan"
 user_mode = {}
 
 logger = logging.getLogger(__name__)
@@ -51,23 +47,8 @@ def _validate_webhook_secret(request: Request) -> bool:
 def home():
     return {
         "status": "success",
-        "message": "Telegram Image Compressor API is running"
+        "message": "Telegram Scanner Bot API is running"
     }
-
-
-@app.post("/api/compress")
-async def compress(file: UploadFile = File(...)):
-
-    data = await file.read()
-    try:
-        compressed = compress_image(data)
-    except ValueError as e:
-        return {"status": "error", "reason": str(e)}
-
-    return StreamingResponse(
-        BytesIO(compressed),
-        media_type="image/jpeg"
-    )
 
 
 @app.post("/api/webhook")
@@ -102,28 +83,22 @@ async def webhook(request: Request):
             if text.startswith("/start"):
                 send_message(
                     chat_id,
-                    "Halo! Selamat datang di Bot Kompres Gambar.\n\n"
+                    "Halo! Selamat datang di Bot Scan Dokumen.\n\n"
                     "Gunakan menu berikut:\n"
-                    "/compress - Kompres foto\n"
-                    "/scanner - Scan foto jadi hitam-putih\n"
+                    "/scanner - Scan foto jadi hitam-putih (CamScanner style)\n"
                     "/help - Bantuan"
                 )
                 return {"status": "ok"}
             elif text.startswith("/help"):
                 send_message(
                     chat_id,
-                    "Bot ini dapat mengompres dan memindai gambar Anda.\n\n"
+                    "Bot ini memindai foto dokumen menjadi hitam-putih bersih.\n\n"
                     "Cara pakai:\n"
-                    "1. Klik /compress atau /scanner\n"
-                    "2. Kirim foto (maks 4 MB)\n"
-                    "3. Bot akan mengirimkan hasilnya."
-                )
-                return {"status": "ok"}
-            elif text.startswith("/compress"):
-                user_mode[chat_id] = "compress"
-                send_message(
-                    chat_id,
-                    "Silakan kirimkan foto yang ingin Anda kompres."
+                    "1. Klik /scanner\n"
+                    "2. Kirim foto dokumen (maks 4 MB)\n"
+                    "3. Bot akan mengirimkan hasil scan-nya.\n\n"
+                    "Tips: Gunakan background berwarna kontras dengan dokumen, "
+                    "dan pastikan dokumen tidak terpotong."
                 )
                 return {"status": "ok"}
             elif text.startswith("/scanner"):
@@ -139,7 +114,7 @@ async def webhook(request: Request):
 
             send_message(
                 chat_id,
-                "📷 Silakan kirim gambar untuk dikompres."
+                "📷 Silakan kirim foto untuk di-scan."
             )
 
             return {"status": "ok"}
@@ -273,86 +248,44 @@ async def webhook(request: Request):
                 "mode": "scan"
             }
 
-        # ==========================
-        # 4. Kompres via modul
-        # ==========================
-
+        # Default: jika user tidak set mode, default ke scan
         try:
-            compressed_data = compress_image(original_data)
-        except ValueError as e:
-            send_message(
-                chat_id,
-                f"❌ {e}"
-            )
-            return {"status": "error"}
+            scanned_data = scan_image(original_data)
         except Exception:
-            logger.exception("Gagal mengompres gambar")
+            logger.exception("Gagal scan gambar")
             send_message(
                 chat_id,
-                "❌ Gagal mengompres foto."
+                "❌ Gagal memproses foto untuk discan."
             )
             return {"status": "error"}
-
-        compressed_size = len(compressed_data)
-
-        # ==========================
-        # 5. Hitung penghematan
-        # ==========================
-
-        saved_bytes = original_size - compressed_size
-
-        if original_size > 0:
-            saved_percent = (
-                saved_bytes / original_size
-            ) * 100
-        else:
-            saved_percent = 0
-
-        original_mb = original_size / (1024 * 1024)
-        compressed_mb = compressed_size / (1024 * 1024)
-
-        # ==========================
-        # 6. Kirim hasil
-        # ==========================
-
-        caption = (
-            "✅ Gambar berhasil dikompres!\n\n"
-            f"📦 Sebelum : {original_mb:.2f} MB\n"
-            f"🗜️ Sesudah : {compressed_mb:.2f} MB\n"
-            f"💾 Hemat   : {saved_percent:.1f}%"
-        )
 
         response = requests.post(
             f"{TELEGRAM_API}/sendPhoto",
             files={
                 "photo": (
-                    "compressed.jpg",
-                    compressed_data,
+                    "scanned.jpg",
+                    scanned_data,
                     "image/jpeg"
                 )
             },
             data={
                 "chat_id": chat_id,
-                "caption": caption
+                "caption": "✅ Foto berhasil di-scan!"
             },
             timeout=HTTP_TIMEOUT
         )
 
         if not response.ok:
-
             send_message(
                 chat_id,
-                "❌ Gambar berhasil dikompres, "
+                "❌ Foto berhasil di-scan, "
                 "tetapi gagal mengirim hasilnya."
             )
-
             return {"status": "error"}
 
         return {
             "status": "success",
-            "original_size": original_size,
-            "compressed_size": compressed_size,
-            "saved_percent": saved_percent
+            "mode": "scan"
         }
 
     except Exception:

@@ -1,36 +1,16 @@
-# PROJECT.md — Bot Kompres & Scan Dokumen (Telegram)
+# PROJECT.md — Bot Scan Dokumen (Telegram)
 
 ## Tujuan
-Bot Telegram personal untuk memperkecil ukuran file dan merapikan dokumen langsung dari chat.
+Bot Telegram personal untuk merapikan dokumen langsung dari chat.
 Pengguna: saya sendiri. Masalah yang diselesaikan:
-- Foto/PDF terlalu besar untuk dikirim → kompres.
 - Foto dokumen berantakan (pencahayaan tidak merata, latar kotor) → scan ala CamScanner.
 
 ## Fitur
 
-### 1. Kompres Gambar
+### 1. Scan Dokumen
 | | |
 |---|---|
-| Input | Foto dari chat Telegram (maks 4 MB) |
-| Output | JPEG `quality=40, optimize=True` via `sendPhoto` + caption statistik (sebelum/sesudah/% hemat) |
-| Parameter user | Tidak ada — fixed q=40 di v1 |
-
-Status: **jalan** (logic masih inline di `api/index.py`, rencana refactor ke `api/compress.py`).
-
-### 2. Kompres PDF
-| | |
-|---|---|
-| Input | PDF dari chat Telegram (maks 4 MB), datang sebagai `message.document` |
-| Output | PDF terkompresi via `sendDocument` + caption statistik |
-| Library | PyMuPDF (`fitz`) — re-encode gambar di halaman jadi JPEG q=40, hapus metadata, garbage-collect objek |
-| Parameter user | Tidak ada di v1 |
-
-Status: **belum dibuat**.
-
-### 3. Scan Dokumen
-| | |
-|---|---|
-| Input | Foto dokumen (maks 4 MB) |
+| Input | Foto dokumen dari chat Telegram (maks 4 MB) |
 | Output | PNG hitam-putih bersih via `sendPhoto` |
 
 Pipeline saat ini (`api/scanner.py`, flat scan):
@@ -40,7 +20,6 @@ Status: **jalan**. Belum ada: deteksi tepi + perspective transform (auto-deteksi
 
 ## Scope v1 — TIDAK Dikerjakan
 - Deteksi tepi + perspective transform otomatis (masih flat scan) → pindah ke v2/TODO.
-- Level kompresi dinamis dari user (Low/Med/High).
 - OCR / ekstraksi teks.
 - Batch multi-halaman / multi-file.
 - Database, riwayat proses, storage persisten.
@@ -51,8 +30,6 @@ Status: **jalan**. Belum ada: deteksi tepi + perspective transform (auto-deteksi
 |---|---|---|
 | Runtime | Python | Sudah dipakai kode existing |
 | Webhook | FastAPI | Async-native; konvensi `api/index.py` = runtime Python Vercel tanpa konfigurasi tambahan |
-| Kompres gambar | Pillow | Standar, sudah terbukti di kode existing |
-| Kompres PDF | **PyMuPDF** | Satu wheel pip (~50 MB), bisa re-compress gambar dalam PDF; **tanpa binary eksternal** — Ghostscript/qpdf tidak realistis di serverless |
 | Image processing | opencv-python-headless | Tanpa dependency GUI, aman untuk serverless |
 | HTTP client | requests | Sinkron sederhana, cukup untuk bot personal |
 | Test | pytest (+ pytest-asyncio) | Standar |
@@ -62,18 +39,16 @@ Struktur:
 ```
 api/
   index.py        # entrypoint Vercel: webhook Telegram + handler command
-  compress.py     # compress_image(data: bytes, quality=40) -> bytes   [TODO: pisah dari index.py]
-  pdf.py          # compress_pdf(data: bytes) -> bytes                  [TODO: buat baru]
   scanner.py      # scan_image(data: bytes) -> bytes                    (sudah ada)
 tests/
   test_scan_image.py   # unit test pytest scanner
   test_scanner.py      # CLI tuning preset scanner (python -m tests.test_scanner --show)
   send_to_scanner.py   # uji manual satu gambar + matplotlib
-samples/          # gambar/PDF uji (gitignored)
+samples/          # gambar uji (gitignored)
 ```
 
 Aturan:
-- Penamaan `snake_case`; fungsi modul fitur = kata kerja (`compress_image`, `scan_image`, `compress_pdf`).
+- Penamaan `snake_case`; fungsi modul fitur = kata kerja (`scan_image`).
 - Kontrak fungsi modul fitur: **bytes masuk → bytes keluar**, raise `ValueError` jika input invalid.
 - Error handling: try/except lokal di handler → kirim pesan gagal ke user → return `{"status": "error", "reason": ...}`. Jangan biarkan exception naik sampai webhook (Telegram akan retry).
 - File besar: cek `file_size` dari `getFile` **sebelum download**; tolak > 4 MB dengan pesan jelas.

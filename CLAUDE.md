@@ -3,10 +3,10 @@
 Konteks proyek untuk AI agent. Baca ini dulu sebelum coding — detail lengkap di `PROJECT.md`, task list di `TODO.md`.
 
 ## Apa Ini
-Bot Telegram **personal** (Bahasa Indonesia) dengan 3 fitur: kompres gambar, kompres PDF, scan dokumen ala CamScanner. Deploy target: **Vercel** (serverless, plan Hobby).
+Bot Telegram **personal** (Bahasa Indonesia) dengan 1 fitur: scan dokumen ala CamScanner. Deploy target: **Vercel** (serverless, plan Hobby).
 
 ## Stack
-Python · FastAPI (webhook) · Pillow (kompres gambar, JPEG q=40 fixed) · PyMuPDF/fitz (kompres PDF, belum dibuat) · opencv-python-headless + numpy (scanner) · requests (Telegram Bot API) · pytest.
+Python · FastAPI (webhook) · opencv-python-headless + numpy (scanner) · requests (Telegram Bot API) · pytest.
 
 ## Struktur & File Penting
 ```
@@ -20,18 +20,15 @@ TUNING_SCANNER.txt # panduan tuning scanner
 
 ## Pola Handler Bot (`api/index.py`)
 - Semua masuk lewat `POST /api/webhook` → parse `update["message"]`.
-- Command text: `text.startswith("/cmd")` → set `user_mode[chat_id]` (`"compress"` / `"scan"`) → minta user kirim file.
+- Command text: `text.startswith("/cmd")` → set `user_mode[chat_id]` (`"scan"`) → minta user kirim file.
 - Foto: `message["photo"][-1]` (index terakhir = resolusi terbesar).
-- PDF nanti datang sebagai `message.document` + `mime_type == "application/pdf"` (**bukan** `photo`) — handler untuk ini belum ada.
 - Webhook divalidasi header `X-Telegram-Bot-Api-Secret-Token` (env `TELEGRAM_WEBHOOK_SECRET`, opsional — dilewati jika kosong); seluruh body webhook dibungkus try/except induk.
-- Balasan via helper `send_message(chat_id, text)` dan POST langsung ke `{TELEGRAM_API}/sendPhoto|sendDocument`.
+- Balasan via helper `send_message(chat_id, text)` dan POST langsung ke `{TELEGRAM_API}/sendPhoto`.
 
 ## Aturan Keras
 1. **Maks file 4 MB** — cek `file_size` dari respons `getFile` SEBELUM download.
 2. Semua proses **in-memory** (Vercel tanpa persistent disk). Bytes masuk → proses → kirim balik.
 3. Kontrak fungsi modul fitur: `bytes -> bytes`, raise `ValueError` jika input invalid:
-   - `compress_image(data, quality=40)` [TODO: dipisah dari index.py]
-   - `compress_pdf(data)`
    - `scan_image(data)` ✅ sudah ada
 4. Exception di handler ditangkap → kirim pesan ❌ ke user → return JSON status. Jangan biarkan error naik ke webhook (Telegram retry ulang).
 5. Jangan ubah parameter pipeline scanner tanpa tuning dulu via `python -m tests.test_scanner --show`.
@@ -44,7 +41,6 @@ $env:TELEGRAM_BOT_TOKEN = "123:abc"
 uvicorn api.index:app --reload --port 8000
 pytest tests/test_scan_image.py -v        # unit test scanner
 python -m tests.test_scanner --show       # tuning scanner + grid perbandingan
-python tests/send_to_scanner.py           # uji 1 gambar visual (matplotlib)
 ```
 Webhook lokal: pakai ngrok → set webhook ke `<ngrok-url>/api/webhook`.
 
@@ -57,13 +53,9 @@ Webhook lokal: pakai ngrok → set webhook ke `<ngrok-url>/api/webhook`.
 ## Status Fitur
 | Fitur | Status |
 |---|---|
-| Kompres gambar | ✅ jalan (logic inline di index.py, refactor terjadwal) |
 | Scan dokumen | ✅ jalan (flat scan; perspective transform = TODO) |
-| Kompres PDF | ❌ belum dibuat (rencana PyMuPDF, lihat TODO.md) |
 
 ## Keputusan Desain (jangan diubah tanpa konfirmasi user)
-- Kualitas JPEG **fixed 40%** untuk v1; level dinamis hanya backlog v2.
-- PyMuPDF dipilih karena satu wheel pip, tanpa binary eksternal (Ghostscript tidak realistis di serverless).
-- Hasil gambar dikirim via `sendPhoto`; PDF via `sendDocument`.
+- Hasil gambar dikirim via `sendPhoto` (PNG).
 - Pesan bot berbahasa Indonesia.
 - `user_mode` in-memory sengaja dipertahankan walau flaky di multi-instance serverless (keputusan v1).

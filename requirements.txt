@@ -1,5 +1,4 @@
 fastapi
-pillow
 python-multipart
 requests
 opencv-python-headless
