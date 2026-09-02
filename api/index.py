@@ -14,6 +14,7 @@ except ImportError:
 app = FastAPI()
 
 BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 
 TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 TELEGRAM_FILE_API = f"https://api.telegram.org/file/bot{BOT_TOKEN}"
@@ -455,3 +456,21 @@ async def send_message(chat_id, text, parse_mode="Markdown", reply_markup=None):
         data=data,
         timeout=HTTP_TIMEOUT
     )
+    
+@app.post("/api/ping")
+def ping():
+    data = {
+        "chat_id": CHAT_ID,
+        "text": "🔔 Test notifikasi berhasil!"
+    }
+
+    response = requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        data=data,
+        timeout=HTTP_TIMEOUT
+    )
+
+    return {
+        "status_code": response.status_code,
+        "telegram_response": response.json()
+    }
