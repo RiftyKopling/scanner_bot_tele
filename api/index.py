@@ -1,7 +1,9 @@
 import os
 import logging
+import time
 import requests
 import json
+import uuid
 
 from fastapi import FastAPI, Request
 
@@ -9,6 +11,11 @@ try:
     from api.scanner import scan_image
 except ImportError:
     from scanner import scan_image
+
+try:
+    from api.pdf_utils import png_to_pdf, combine_to_pdf
+except ImportError:
+    from pdf_utils import png_to_pdf, combine_to_pdf
 
 
 app = FastAPI()
@@ -32,10 +39,39 @@ WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET")
 # Batas ukuran file: 4 MB
 MAX_FILE_SIZE = 4 * 1024 * 1024
 
-# Menyimpan mode tiap pengguna: "scan"
-user_mode = {}
+# Cache untuk hasil scan (untuk download PNG/PDF)
+# cache_id -> {"png": bytes, "ts": float, "chat_id": int}
+scan_cache: dict[str, dict] = {}
+CACHE_TTL = 300  # 5 menit
+
+# Session untuk batch scan
+# chat_id -> {"mode": "scan"|"scan_batch", "pages": [bytes...], "started_at": float, "message_id": int}
+user_sessions: dict[int, dict] = {}
+MAX_BATCH_PAGES = 10
+SESSION_TTL = 600  # 10 menit
 
 logger = logging.getLogger(__name__)
+
+
+def _cleanup_expired():
+    """Lazy cleanup untuk cache dan session yang expired."""
+    now = time.time()
+    
+    # Cleanup scan_cache
+    expired_cache = [
+        cid for cid, data in scan_cache.items()
+        if now - data["ts"] > CACHE_TTL
+    ]
+    for cid in expired_cache:
+        del scan_cache[cid]
+    
+    # Cleanup user_sessions
+    expired_sessions = [
+        uid for uid, sess in user_sessions.items()
+        if now - sess["started_at"] > SESSION_TTL
+    ]
+    for uid in expired_sessions:
+        del user_sessions[uid]
 
 
 def _validate_webhook_secret(request: Request) -> bool:
@@ -106,6 +142,8 @@ async def webhook(request: Request):
             "reason": "invalid_secret"
         }
 
+    _cleanup_expired()
+
     chat_id = None
 
     try:
@@ -132,7 +170,7 @@ async def webhook(request: Request):
             elif text.startswith("/status"):
                 return await send_status_message(chat_id)
             elif text.startswith("/scanner"):
-                user_mode[chat_id] = "scan"
+                user_sessions[chat_id] = {"mode": "scan", "pages": [], "started_at": time.time(), "message_id": 0}
                 await send_message(
                     chat_id,
                     "📷 *Mode Scan Dokumen Aktif*\n\n"
@@ -239,7 +277,7 @@ async def webhook(request: Request):
         # 3b. Mode scanner: proses dengan OpenCV
         # ==========================
 
-        if user_mode.get(chat_id) == "scan":
+        if user_sessions.get(chat_id, {}).get("mode") == "scan":
 
             try:
 
@@ -350,6 +388,8 @@ async def webhook(request: Request):
 
 async def handle_callback_query(callback_query):
     """Handle inline keyboard button presses."""
+    _cleanup_expired()
+    
     chat_id = callback_query["message"]["chat"]["id"]
     data = callback_query.get("data", "")
     callback_query_id = callback_query["id"]
@@ -368,7 +408,7 @@ async def handle_callback_query(callback_query):
     elif data == "cmd_status":
         return await send_status_message(chat_id)
     elif data == "cmd_scanner":
-        user_mode[chat_id] = "scan"
+        user_sessions[chat_id] = {"mode": "scan", "pages": [], "started_at": time.time(), "message_id": 0}
         await send_message(
             chat_id,
             "📷 *Mode Scan Dokumen Aktif*\n\n"
@@ -427,7 +467,8 @@ async def send_help_message(chat_id):
 
 async def send_status_message(chat_id):
     """Kirim info status bot dengan inline keyboard."""
-    mode = user_mode.get(chat_id, "belum dipilih")
+    session = user_sessions.get(chat_id, {})
+    mode = session.get("mode", "belum dipilih")
     mode_text = "📷 Scanner aktif" if mode == "scan" else "⏳ Belum dipilih"
 
     text = (
@@ -474,3 +515,17 @@ def ping():
         "status_code": response.status_code,
         "telegram_response": response.json()
     }
+@app.head("/api/ping")
+def ping_head():
+    data = {
+        "chat_id": CHAT_ID,
+        "text": "🔔 Test UptimeRobot berhasil!"
+    }
+
+    response = requests.post(
+        f"{TELEGRAM_API}/sendMessage",
+        data=data,
+        timeout=HTTP_TIMEOUT
+    )
+
+    return {"status": "ok"}
