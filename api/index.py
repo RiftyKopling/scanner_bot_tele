@@ -457,7 +457,7 @@ async def send_message(chat_id, text, parse_mode="Markdown", reply_markup=None):
         timeout=HTTP_TIMEOUT
     )
     
-@app.post("/api/ping")
+@app.get("/api/ping")
 def ping():
     data = {
         "chat_id": CHAT_ID,
