@@ -1,7 +1,5 @@
 {
-  "buildCommand": "pip install -r requirements.txt",
   "devCommand": "uvicorn api.index:app --reload --port 8000",
-  "installCommand": "pip install -r requirements.txt",
   "framework": null,
   "regions": ["sin1"],
   "functions": {
