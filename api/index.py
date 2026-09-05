@@ -165,6 +165,39 @@ def _build_batch_finish_keyboard(cache_id: str):
     }
 
 
+def _build_scan_mode_keyboard():
+    """Keyboard untuk memilih mode scan: single atau batch."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📷 Scan Tunggal", "callback_data": "scan_mode_single"},
+                {"text": "📚 Scan Batch (maks 10)", "callback_data": "scan_mode_batch"}
+            ],
+            [
+                {"text": "🏠 Menu Utama", "callback_data": "cmd_start"}
+            ]
+        ]
+    }
+
+
+def _build_batch_finish_extended_keyboard(cache_id: str, page_count: int):
+    """Keyboard setelah batch selesai dengan opsi tambah halaman."""
+    return {
+        "inline_keyboard": [
+            [
+                {"text": "📄 Download PDF", "callback_data": f"dl_pdf:{cache_id}"},
+                {"text": "➕ Tambah Halaman", "callback_data": f"batch_add_more:{cache_id}"}
+            ],
+            [
+                {"text": "🗑️ Batal", "callback_data": "batch_cancel"}
+            ],
+            [
+                {"text": "🏠 Menu Utama", "callback_data": "cmd_start"}
+            ]
+        ]
+    }
+
+
 @app.get("/api")
 def home():
     return {
@@ -215,17 +248,13 @@ async def webhook(request: Request):
             elif text.startswith("/status"):
                 return await send_status_message(chat_id)
             elif text.startswith("/scanner"):
-                user_sessions[chat_id] = {"mode": "scan", "pages": [], "started_at": time.time(), "message_id": 0}
                 await send_message(
                     chat_id,
-                    "📷 *Mode Scan Dokumen Aktif*\n\n"
-                    "Silakan kirimkan foto yang ingin dipindai.\n\n"
-                    "💡 *Tips hasil terbaik:*\n"
-                    "• Background kontras dengan dokumen\n"
-                    "• Dokumen tidak terpotong\n"
-                    "• Cahaya merata, hindari bayangan\n"
-                    "• Kamera tegak lurus ke dokumen",
-                    reply_markup=_build_help_keyboard()
+                    "📷 *Pilih Mode Scan*\n\n"
+                    "📷 *Scan Tunggal* — 1 foto → 1 hasil\n"
+                    "📚 *Scan Batch* — Beberapa foto → 1 PDF (maks 10 halaman)\n\n"
+                    "Silakan pilih mode di bawah:",
+                    reply_markup=_build_scan_mode_keyboard()
                 )
                 return {"status": "ok"}
 
@@ -338,6 +367,7 @@ async def webhook(request: Request):
         if mode == "scan_batch":
             # Batch mode: accumulate pages
             pages = session.get("pages", [])
+            batch_id = session.get("batch_id")
             pages.append(scanned_data)
             
             if len(pages) >= MAX_BATCH_PAGES:
@@ -349,29 +379,40 @@ async def webhook(request: Request):
                     await send_message(chat_id, "❌ Gagal membuat PDF multi-halaman.")
                     return {"status": "error"}
                 
-                cache_id = str(uuid.uuid4())[:8]
+                cache_id = batch_id or str(uuid.uuid4())[:8]
                 scan_cache[cache_id] = {
                     "png": pages[0],
+                    "pages": pages,
                     "pdf": pdf_bytes,
                     "ts": time.time(),
-                    "chat_id": chat_id
+                    "chat_id": chat_id,
+                    "is_batch": True
                 }
                 
-                del user_sessions[chat_id]
+                user_sessions[chat_id] = {
+                    "mode": "scan_batch_finished",
+                    "batch_id": cache_id,
+                    "started_at": time.time(),
+                    "message_id": 0
+                }
                 
                 await send_document(
                     chat_id,
                     pdf_bytes,
                     filename=f"batch_scan_{len(pages)}pages.pdf",
-                    caption=f"✅ Batch scan selesai (maks {MAX_BATCH_PAGES}) — {len(pages)} halaman digabung ke PDF",
-                    reply_markup=_build_batch_finish_keyboard(cache_id)
+                    caption=(
+                        f"✅ Batch scan selesai (maks {MAX_BATCH_PAGES}) — {len(pages)} halaman digabung ke PDF.\n\n"
+                        f"Klik *➕ Tambah Halaman* jika masih ada dokumen yang tertinggal."
+                    ),
+                    reply_markup=_build_batch_finish_extended_keyboard(cache_id, len(pages))
                 )
                 return {"status": "success", "mode": "scan_batch", "pages": len(pages)}
             
-            # Update session
+            # Update session (preserve batch_id)
             user_sessions[chat_id] = {
                 "mode": "scan_batch",
                 "pages": pages,
+                "batch_id": batch_id,
                 "started_at": time.time(),
                 "message_id": 0
             }
@@ -495,17 +536,41 @@ async def handle_callback_query(callback_query):
     elif data == "cmd_status":
         return await send_status_message(chat_id)
     elif data == "cmd_scanner":
+        await send_message(
+            chat_id,
+            "📷 *Pilih Mode Scan*\n\n"
+            "📷 *Scan Tunggal* — 1 foto → 1 hasil\n"
+            "📚 *Scan Batch* — Beberapa foto → 1 PDF (maks 10 halaman)\n\n"
+            "Silakan pilih mode di bawah:",
+            reply_markup=_build_scan_mode_keyboard()
+        )
+        return {"status": "ok"}
+    elif data == "scan_mode_single":
         user_sessions[chat_id] = {"mode": "scan", "pages": [], "started_at": time.time(), "message_id": 0}
         await send_message(
             chat_id,
-            "📷 *Mode Scan Dokumen Aktif*\n\n"
-            "Silakan kirimkan foto yang ingin dipindai.\n\n"
+            "📷 *Mode Scan Tunggal Aktif*\n\n"
+            "Kirim satu foto untuk discan.\n\n"
             "💡 *Tips hasil terbaik:*\n"
             "• Background kontras dengan dokumen\n"
             "• Dokumen tidak terpotong\n"
             "• Cahaya merata, hindari bayangan\n"
             "• Kamera tegak lurus ke dokumen",
             reply_markup=_build_help_keyboard()
+        )
+        return {"status": "ok"}
+    elif data == "scan_mode_batch":
+        user_sessions[chat_id] = {"mode": "scan_batch", "pages": [], "started_at": time.time(), "message_id": 0}
+        await send_message(
+            chat_id,
+            "📚 *Mode Scan Batch Aktif* — (maks 10 halaman)\n\n"
+            "Kirim foto halaman dokumen satu per satu.\n"
+            "Setelah semua foto terkirim, klik *✅ Selesai* untuk gabung ke PDF.\n\n"
+            "💡 *TIPS UNTUK MODE BATCH:*\n"
+            "• Pastikan pencahayaan dan sudut konsisten\n"
+            "• Urutkan foto sesuai urutan halaman dokumen\n"
+            "• Klik *➕ Tambah Halaman* setelah selesai jika masih ada dokumen",
+            reply_markup=_build_batch_keyboard(0)
         )
         return {"status": "ok"}
     elif data.startswith("dl_png:"):
@@ -518,6 +583,8 @@ async def handle_callback_query(callback_query):
         return await handle_batch_finish(chat_id)
     elif data == "batch_cancel":
         return await handle_batch_cancel(chat_id)
+    elif data.startswith("batch_add_more:"):
+        return await handle_batch_add_more(chat_id, data)
 
     return {"status": "ignored"}
 
@@ -541,25 +608,33 @@ async def handle_download_png(chat_id: int, data: str):
 
 
 async def handle_download_pdf(chat_id: int, data: str):
-    """Handle download PDF callback - convert PNG to PDF."""
+    """Handle download PDF callback - convert PNG to PDF or use cached batch PDF."""
     cache_id = data.split(":", 1)[1]
     cached = scan_cache.get(cache_id)
     
-    if not cached or cached["chat_id"] != chat_id:
+    if not cached or cached.get("chat_id") != chat_id:
         await send_message(chat_id, "❌ File tidak ditemukan atau sudah expired.")
         return {"status": "error"}
     
-    try:
-        pdf_bytes = png_to_pdf(cached["png"])
-    except Exception:
-        logger.exception("Gagal konversi PNG ke PDF")
-        await send_message(chat_id, "❌ Gagal membuat PDF.")
-        return {"status": "error"}
+    # Use cached PDF if available (batch mode)
+    pdf_bytes = cached.get("pdf")
+    is_batch = cached.get("is_batch", False)
+    
+    if not pdf_bytes:
+        try:
+            pdf_bytes = png_to_pdf(cached["png"])
+        except Exception:
+            logger.exception("Gagal konversi PNG ke PDF")
+            await send_message(chat_id, "❌ Gagal membuat PDF.")
+            return {"status": "error"}
+    
+    filename = f"batch_scan_{len(cached.get('pages', [1]))}pages.pdf" if is_batch else "scanned.pdf"
+    caption = "📄 Hasil scan (PDF)" if not is_batch else "📄 Hasil scan (PDF)"
     
     await send_document(
         chat_id,
         pdf_bytes,
-        filename="scanned.pdf",
+        filename=filename,
         caption="📄 Hasil scan (PDF)"
     )
     return {"status": "ok"}
@@ -613,30 +688,45 @@ async def handle_batch_finish(chat_id: int):
         await send_message(chat_id, "❌ Gagal membuat PDF multi-halaman.")
         return {"status": "error"}
     
-    # Cache PDF for download button
-    cache_id = str(uuid.uuid4())[:8]
+    # Cache PDF with all pages for potential resume
+    existing_batch_id = session.get("batch_id")
+    cache_id = existing_batch_id or str(uuid.uuid4())[:8]
     scan_cache[cache_id] = {
-        "png": pages[0],  # store first page as preview
+        "png": pages[0],
+        "pages": pages,
         "pdf": pdf_bytes,
         "ts": time.time(),
-        "chat_id": chat_id
+        "chat_id": chat_id,
+        "is_batch": True
     }
     
-    # Clear session
-    del user_sessions[chat_id]
+    # Update session to track finished batch (for resume via add_more)
+    user_sessions[chat_id] = {
+        "mode": "scan_batch_finished",
+        "batch_id": cache_id,
+        "started_at": time.time(),
+        "message_id": 0
+    }
     
     await send_document(
         chat_id,
         pdf_bytes,
         filename=f"batch_scan_{len(pages)}pages.pdf",
-        caption=f"✅ Batch scan selesai — {len(pages)} halaman digabung ke PDF",
-        reply_markup=_build_batch_finish_keyboard(cache_id)
+        caption=(
+            f"✅ Batch selesai — {len(pages)} halaman digabung ke PDF.\n\n"
+            f"Klik *➕ Tambah Halaman* jika masih ada dokumen yang tertinggal."
+        ),
+        reply_markup=_build_batch_finish_extended_keyboard(cache_id, len(pages))
     )
     return {"status": "ok"}
 
 
 async def handle_batch_cancel(chat_id: int):
-    """Handle batch cancel - clear session."""
+    """Handle batch cancel - clear session and cache."""
+    session = user_sessions.get(chat_id, {})
+    batch_id = session.get("batch_id")
+    if batch_id and batch_id in scan_cache:
+        del scan_cache[batch_id]
     if chat_id in user_sessions:
         del user_sessions[chat_id]
     await send_message(
@@ -647,21 +737,54 @@ async def handle_batch_cancel(chat_id: int):
     return {"status": "ok"}
 
 
+async def handle_batch_add_more(chat_id: int, data: str):
+    """Handle add more pages to a finished batch."""
+    cache_id = data.split(":", 1)[1]
+    cached = scan_cache.get(cache_id)
+    
+    if not cached or cached.get("chat_id") != chat_id or not cached.get("is_batch"):
+        await send_message(chat_id, "❌ Batch tidak ditemukan atau sudah expired.")
+        return {"status": "error"}
+    
+    existing_pages = cached.get("pages", [])
+    if len(existing_pages) >= MAX_BATCH_PAGES:
+        await send_message(chat_id, f"❌ Sudah mencapai batas {MAX_BATCH_PAGES} halaman. Buat batch baru.")
+        return {"status": "error"}
+    
+    # Restore session with existing pages
+    user_sessions[chat_id] = {
+        "mode": "scan_batch",
+        "pages": existing_pages,
+        "batch_id": cache_id,
+        "started_at": time.time(),
+        "message_id": 0
+    }
+    
+    await send_message(
+        chat_id,
+        f"📷 *Batch Dilanjutkan* — {len(existing_pages)}/{MAX_BATCH_PAGES} halaman\n\n"
+        f"Anda punya {len(existing_pages)} halaman dari batch sebelumnya.\n"
+        f"Kirim foto berikutnya, atau klik *Selesai* untuk gabung ke PDF.",
+        reply_markup=_build_batch_keyboard(len(existing_pages))
+    )
+    return {"status": "ok"}
+
+
 async def send_document(chat_id: int, file_bytes: bytes, filename: str, caption: str = "", reply_markup=None):
     """Kirim document ke Telegram."""
     files = {
         "document": (filename, file_bytes, "application/octet-stream")
     }
-    data = {"chat_id": chat_id}
+    payload: dict = {"chat_id": chat_id}
     if caption:
-        data["caption"] = caption
+        payload["caption"] = caption  # type: ignore
     if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
+        payload["reply_markup"] = json.dumps(reply_markup)  # type: ignore
     
     requests.post(
         f"{TELEGRAM_API}/sendDocument",
         files=files,
-        data=data,
+        data=payload,
         timeout=HTTP_TIMEOUT
     )
 
@@ -687,18 +810,22 @@ async def send_help_message(chat_id):
     """Kirim pesan bantuan detail dengan inline keyboard."""
     text = (
         "📖 *CARA PAKAI OPTIMAL*\n\n"
-        "1️⃣ Klik `/scanner` atau tombol *Scan Dokumen*\n"
+        "Pilih mode di menu utama:\n"
+        "📷 *Scan Tunggal* — 1 foto → 1 hasil\n"
+        "📚 *Scan Batch* — Beberapa foto → 1 PDF (maks 10 halaman)\n\n"
+        "1️⃣ Klik tombol di bawah atau ketik `/scanner`\n"
         "2️⃣ Ambil foto dokumen:\n"
         "   ✅ Background kontras (hitam/putih)\n"
         "   ✅ Dokumen tidak terpotong\n"
         "   ✅ Cahaya merata, hindari bayangan\n"
         "   ❌ Jangan miring ekstrem (>30°)\n\n"
-        "💡 *TIPS HASIL TERBAIK:*\n"
-        "• Kertas putih di atas meja gelap\n"
-        "• Kamera tegak lurus ke dokumen\n"
-        "• Fokus tajam (tap layar HP)\n\n"
+        "💡 *TIPS BATCH SCAN:*\n"
+        "• Pastikan semua halaman konsisten (pencahayaan & sudut)\n"
+        "• Urutkan foto sesuai urutan dokumen asli\n"
+        "• Setelah klik Selesai, gunakan ➕ Tambah Halaman jika lupa\n"
+        "• Scan berurutan supaya PDF sesuai halaman asli\n\n"
         "⚠️ *BATASAN:*\n"
-        "• Maks 4 MB (Telegram kompres otomatis)\n"
+        "• Maks 4 MB per foto (Telegram kompres otomatis)\n"
         "• Flat scan — belum auto-crop sudut\n"
         "• Hasil PNG → Telegram bisa kompres ulang"
     )
@@ -710,7 +837,19 @@ async def send_status_message(chat_id):
     """Kirim info status bot dengan inline keyboard."""
     session = user_sessions.get(chat_id, {})
     mode = session.get("mode", "belum dipilih")
-    mode_text = "📷 Scanner aktif" if mode == "scan" else "⏳ Belum dipilih"
+    
+    if mode == "scan":
+        mode_text = "📷 Scan Tunggal aktif"
+    elif mode == "scan_batch":
+        pages = session.get("pages", [])
+        mode_text = f"📚 Scan Batch aktif — {len(pages)}/{MAX_BATCH_PAGES} halaman"
+    elif mode == "scan_batch_finished":
+        batch_id = session.get("batch_id", "")
+        cached = scan_cache.get(batch_id, {})
+        pages = cached.get("pages", [])
+        mode_text = f"✅ Batch selesai — {len(pages)} halaman"
+    else:
+        mode_text = "⏳ Belum dipilih"
 
     text = (
         f"ℹ️ *STATUS BOT*\n\n"
@@ -725,17 +864,17 @@ async def send_status_message(chat_id):
 
 async def send_message(chat_id, text, parse_mode="Markdown", reply_markup=None):
     """Kirim pesan ke Telegram dengan dukungan Markdown dan inline keyboard."""
-    data = {
+    payload: dict = {
         "chat_id": chat_id,
         "text": text,
         "parse_mode": parse_mode
     }
     if reply_markup:
-        data["reply_markup"] = json.dumps(reply_markup)
+        payload["reply_markup"] = json.dumps(reply_markup)  # type: ignore
 
     requests.post(
         f"{TELEGRAM_API}/sendMessage",
-        data=data,
+        data=payload,
         timeout=HTTP_TIMEOUT
     )
     
