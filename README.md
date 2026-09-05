@@ -6,28 +6,53 @@ Bot Telegram berbasis **FastAPI** untuk pemindaian dokumen (document scanner) se
 
 ## Fitur
 
-- **`/scanner`** — Mengubah foto dokumen menjadi versi hitam-putih yang lebih bersih, melalui pipeline OpenCV:
+### Scanner Inti (`/scanner`)
+- Mengubah foto dokumen menjadi versi hitam-putih yang lebih bersih, melalui pipeline OpenCV:
   1. Resize otomatis jika lebar gambar > 1600px
   2. Grayscale
   3. Illumination correction (morphological closing untuk estimasi background)
   4. Noise reduction dengan bilateral filter (menjaga tepi teks tetap tajam)
   5. Adaptive thresholding (`ADAPTIVE_THRESH_GAUSSIAN_C`)
   6. Cleanup akhir dengan median blur
-- Validasi ukuran file (maksimal **4 MB** per foto yang dikirim ke bot)
-- Mode per-pengguna disimpan sementara (in-memory) untuk membedakan permintaan `/scanner`
+
+### Dua Mode Scan
+Bot mendukung dua mode scan yang dapat dipilih dari menu inline keyboard:
+- **📷 Scan Tunggal** — 1 foto → 1 hasil (PNG + PDF)
+- **📚 Scan Batch** — Beberapa foto (maks 10 halaman) → 1 PDF gabungan
+
+### Mode Batch dengan Fitur Lanjutan
+- Akumulasi halaman otomatis saat user mengirim foto
+- Tampilan preview tiap halaman dengan keyboard batch (Tambah Halaman / Selesai / Batal)
+- Auto-finish saat mencapai batas 10 halaman
+- **➕ Tambah Halaman setelah selesai** — User bisa menambah halaman yang terlupa ke batch yang sudah jadi
+- PDF hasil batch disimpan di cache untuk diunduh ulang (TTL 5 menit)
+- Pesan tips khusus mode batch saat mode dipilih
+
+### Validasi & Cache
+- Validasi ukuran file (maks **4 MB** per foto)
+- Validasi webhook opsional lewat header `X-Telegram-Bot-Api-Secret-Token`
+- Mode per-pengguna (`user_sessions`) dan cache hasil scan (`scan_cache`) disimpan **in-memory** (akan reset saat cold start)
+- Lazy cleanup: `scan_cache` TTL 5 menit, `user_sessions` TTL 10 menit
+
+### Utilitas
+- Inline keyboard menu utama: Start, Scan Dokumen, Bantuan, Status
+- Health check endpoint: `GET /api`
+- UptimeRobot ping endpoint: `GET /api/ping`
 
 ## Struktur proyek
 
 ```
 scanner_bot_tele/
 ├── api/
-│   ├── index.py       # Endpoint FastAPI: webhook, /api/webhook
-│   └── scanner.py      # Pipeline OpenCV untuk fitur scan_image()
+│   ├── index.py       # Endpoint FastAPI: webhook, handlers batch/scan, inline keyboard
+│   ├── scanner.py      # Pipeline OpenCV untuk fitur scan_image()
+│   └── pdf_utils.py    # Utilitas konversi PNG→PDF dan gabung multi-halaman
 ├── tests/
 │   ├── test_scan_image.py   # unit test pytest scanner
 │   ├── test_scanner.py      # CLI tuning preset scanner
 │   └── send_to_scanner.py   # uji manual satu gambar + matplotlib
 ├── samples/           # gambar uji (gitignored)
+├── vercel.json        # konfigurasi deployment Vercel
 ├── requirements.txt
 └── requirements-dev.txt
 ```
