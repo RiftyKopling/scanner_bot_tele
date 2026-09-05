@@ -797,7 +797,7 @@ async def send_start_message(chat_id):
         "┌─────────────────────────────────┐\n"
         "│ `/scanner` ─ Mode scan dokumen    │\n"
         "│ `/help`    ─ Bantuan detail       │\n"
-        "│ `/status'  ─ Cek mode & batas file│\n"
+        "│ `/status`  ─ Cek mode & batas file│\n"
         "└─────────────────────────────────┘\n\n"
         "📏 Batas: 4 MB per foto\n"
         "📤 Hasil: PNG hitam-putih via chat\n\n"
